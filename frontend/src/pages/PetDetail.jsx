@@ -17,8 +17,9 @@ import PetDialog from "@/components/PetDialog";
 import { toast } from "sonner";
 import {
   Dog, Cat, ArrowLeft, Plus, Syringe, ShieldCheck, Stethoscope, Trash,
-  Sparkle, PencilSimple, CalendarBlank,
+  Sparkle, PencilSimple, CalendarBlank, ChartLineUp, Scales,
 } from "@phosphor-icons/react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const fmt = (d) => (d ? new Date(d).toLocaleDateString("it-IT") : "—");
 
@@ -29,20 +30,22 @@ export default function PetDetail() {
   const [visits, setVisits] = useState([]);
   const [vaccines, setVaccines] = useState([]);
   const [treatments, setTreatments] = useState([]);
+  const [weights, setWeights] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
-  const [recordDialog, setRecordDialog] = useState(null); // 'visit'|'vaccine'|'treatment'
+  const [recordDialog, setRecordDialog] = useState(null); // 'visit'|'vaccine'|'treatment'|'weight'
   const [advice, setAdvice] = useState("");
   const [adviceLoading, setAdviceLoading] = useState(false);
 
   const loadAll = useCallback(async () => {
     try {
-      const [p, v, vac, tr] = await Promise.all([
+      const [p, v, vac, tr, w] = await Promise.all([
         api.get(`/pets/${petId}`),
         api.get(`/pets/${petId}/visits`),
         api.get(`/pets/${petId}/vaccines`),
         api.get(`/pets/${petId}/treatments`),
+        api.get(`/pets/${petId}/weights`),
       ]);
-      setPet(p.data); setVisits(v.data); setVaccines(vac.data); setTreatments(tr.data);
+      setPet(p.data); setVisits(v.data); setVaccines(vac.data); setTreatments(tr.data); setWeights(w.data);
     } catch (e) {
       toast.error("Impossibile caricare l'animale");
       navigate("/dashboard");
@@ -58,7 +61,7 @@ export default function PetDetail() {
   };
 
   const delRecord = async (kind, id) => {
-    const map = { visit: "visits", vaccine: "vaccines", treatment: "treatments" };
+    const map = { visit: "visits", vaccine: "vaccines", treatment: "treatments", weight: "weights" };
     await api.delete(`/pets/${petId}/${map[kind]}/${id}`);
     toast.success("Eliminato");
     loadAll();
@@ -148,6 +151,7 @@ export default function PetDetail() {
           <TabsTrigger value="visits" className="rounded-full gap-1" data-testid="tab-visits"><Stethoscope size={16} /> Visite</TabsTrigger>
           <TabsTrigger value="vaccines" className="rounded-full gap-1" data-testid="tab-vaccines"><Syringe size={16} /> Vaccini</TabsTrigger>
           <TabsTrigger value="treatments" className="rounded-full gap-1" data-testid="tab-treatments"><ShieldCheck size={16} /> Antiparassitari</TabsTrigger>
+          <TabsTrigger value="weight" className="rounded-full gap-1" data-testid="tab-weight"><Scales size={16} /> Peso</TabsTrigger>
         </TabsList>
 
         <TabsContent value="visits" className="mt-6 space-y-3">
@@ -194,6 +198,43 @@ export default function PetDetail() {
             </RecordRow>
           ))}
         </TabsContent>
+
+        <TabsContent value="weight" className="mt-6 space-y-4">
+          <div className="flex justify-end">
+            <Button size="sm" className="rounded-full gap-1" onClick={() => setRecordDialog("weight")} data-testid="add-weight-button"><Plus size={16} weight="bold" /> Registra peso</Button>
+          </div>
+          {weights.length === 0 ? <Empty text="Nessuna misurazione del peso registrata" /> : (
+            <>
+              <Card className="p-5 border-border" data-testid="weight-chart">
+                <div className="flex items-center gap-2 mb-4">
+                  <ChartLineUp size={20} weight="duotone" className="text-primary" />
+                  <h3 className="font-heading font-bold">Andamento del peso (kg)</h3>
+                </div>
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={weights.map((w) => ({ ...w, label: new Date(w.date).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "2-digit" }) }))} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="label" tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} />
+                      <YAxis tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} domain={["auto", "auto"]} />
+                      <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(val) => [`${val} kg`, "Peso"]} />
+                      <Line type="monotone" dataKey="weight" stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 4, fill: "hsl(var(--primary))" }} activeDot={{ r: 6 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
+              <div className="space-y-3">
+                {[...weights].reverse().map((w) => (
+                  <RecordRow key={w.id} onDelete={() => delRecord("weight", w.id)} testid="weight-row">
+                    <div>
+                      <p className="font-semibold">{w.weight} kg</p>
+                      <p className="text-sm text-muted-foreground">{fmt(w.date)}</p>
+                    </div>
+                  </RecordRow>
+                ))}
+              </div>
+            </>
+          )}
+        </TabsContent>
       </Tabs>
 
       <PetDialog open={editOpen} onOpenChange={setEditOpen} onSaved={loadAll} pet={pet} />
@@ -219,7 +260,7 @@ function RecordDialog({ kind, petId, onClose, onSaved }) {
   useEffect(() => { setForm({}); }, [kind]);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-  const titles = { visit: "Nuova visita", vaccine: "Nuovo vaccino", treatment: "Nuovo trattamento" };
+  const titles = { visit: "Nuova visita", vaccine: "Nuovo vaccino", treatment: "Nuovo trattamento", weight: "Registra peso" };
 
   const save = async () => {
     setBusy(true);
@@ -233,6 +274,9 @@ function RecordDialog({ kind, petId, onClose, onSaved }) {
       } else if (kind === "treatment") {
         if (!form.name || !form.date_given || !form.frequency_days) { toast.error("Nome, data e frequenza obbligatori"); setBusy(false); return; }
         await api.post(`/pets/${petId}/treatments`, { name: form.name, date_given: form.date_given, frequency_days: parseInt(form.frequency_days), next_due: form.next_due || null });
+      } else if (kind === "weight") {
+        if (!form.date || !form.weight) { toast.error("Data e peso obbligatori"); setBusy(false); return; }
+        await api.post(`/pets/${petId}/weights`, { date: form.date, weight: parseFloat(form.weight) });
       }
       toast.success("Salvato");
       onSaved(); onClose();
@@ -267,6 +311,12 @@ function RecordDialog({ kind, petId, onClose, onSaved }) {
               <Field label="Data somministrazione"><Input type="date" onChange={(e) => set("date_given", e.target.value)} data-testid="treatment-date-input" /></Field>
               <Field label="Frequenza (giorni)"><Input type="number" onChange={(e) => set("frequency_days", e.target.value)} placeholder="30" data-testid="treatment-frequency-input" /></Field>
               <Field label="Prossima somministrazione"><Input type="date" onChange={(e) => set("next_due", e.target.value)} data-testid="treatment-nextdue-input" /></Field>
+            </>
+          )}
+          {kind === "weight" && (
+            <>
+              <Field label="Data"><Input type="date" onChange={(e) => set("date", e.target.value)} data-testid="weight-date-input" /></Field>
+              <Field label="Peso (kg)"><Input type="number" step="0.1" onChange={(e) => set("weight", e.target.value)} placeholder="12.5" data-testid="weight-value-input" /></Field>
             </>
           )}
           <Button onClick={save} disabled={busy} className="w-full rounded-full" data-testid="save-record-button">{busy ? "Salvataggio..." : "Salva"}</Button>

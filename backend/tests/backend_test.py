@@ -328,7 +328,97 @@ class TestAIChatMemory:
         assert ts == sorted(ts)
 
 
-# ---------- Cleanup: delete pet cascades ----------
+# ---------- Weight logs (NEW FEATURE) ----------
+class TestWeights:
+    """Weight tracking endpoints - list/create/delete + syncing pet.weight to latest."""
+
+    @pytest.fixture(scope="class")
+    def weight_user(self):
+        """Fresh user + pet dedicated to weight tests."""
+        s = requests.Session()
+        email = f"test_wt_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Weight Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        pr = s.post(f"{API}/pets", json={
+            "name": "TEST_Weighty", "species": "dog", "breed": "Beagle",
+            "birth_date": "2021-06-01", "sex": "M", "weight": 10.0
+        }, timeout=15)
+        assert pr.status_code == 200
+        s.pet_id = pr.json()["id"]
+        return s
+
+    def test_list_weights_empty_initially(self, weight_user):
+        r = weight_user.get(f"{API}/pets/{weight_user.pet_id}/weights", timeout=10)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_create_weight_and_persistence(self, weight_user):
+        pid = weight_user.pet_id
+        payload = {"date": "2025-01-05", "weight": 12.3}
+        r = weight_user.post(f"{API}/pets/{pid}/weights", json=payload, timeout=10)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["weight"] == 12.3
+        assert data["date"] == "2025-01-05"
+        assert data["pet_id"] == pid
+        assert "id" in data
+        assert "_id" not in data  # ObjectId must not leak
+        weight_user.w1 = data["id"]
+
+        # GET verifies persistence
+        got = weight_user.get(f"{API}/pets/{pid}/weights", timeout=10).json()
+        assert any(w["id"] == weight_user.w1 for w in got)
+
+    def test_multiple_weights_sorted_asc(self, weight_user):
+        pid = weight_user.pet_id
+        # add two more entries out of order
+        r2 = weight_user.post(f"{API}/pets/{pid}/weights",
+                              json={"date": "2025-03-10", "weight": 13.1}, timeout=10)
+        assert r2.status_code == 200
+        weight_user.w3 = r2.json()["id"]
+        r3 = weight_user.post(f"{API}/pets/{pid}/weights",
+                              json={"date": "2025-02-01", "weight": 12.7}, timeout=10)
+        assert r3.status_code == 200
+        weight_user.w2 = r3.json()["id"]
+
+        lst = weight_user.get(f"{API}/pets/{pid}/weights", timeout=10).json()
+        assert len(lst) == 3
+        dates = [w["date"] for w in lst]
+        assert dates == sorted(dates), f"Weights not sorted asc: {dates}"
+
+    def test_pet_weight_synced_to_latest(self, weight_user):
+        """pet.weight should reflect the measurement with the latest date."""
+        pid = weight_user.pet_id
+        pet = weight_user.get(f"{API}/pets/{pid}", timeout=10).json()
+        # latest measurement was 2025-03-10 with weight 13.1
+        assert pet["weight"] == 13.1, f"Expected pet.weight=13.1, got {pet['weight']}"
+
+    def test_delete_weight_and_verify(self, weight_user):
+        pid = weight_user.pet_id
+        r = weight_user.delete(f"{API}/pets/{pid}/weights/{weight_user.w2}", timeout=10)
+        assert r.status_code == 200
+        lst = weight_user.get(f"{API}/pets/{pid}/weights", timeout=10).json()
+        assert not any(w["id"] == weight_user.w2 for w in lst)
+        assert len(lst) == 2
+
+    def test_weights_require_auth(self, weight_user):
+        pid = weight_user.pet_id
+        r = requests.get(f"{API}/pets/{pid}/weights", timeout=10)
+        assert r.status_code == 401
+
+    def test_weights_isolated_across_users(self, weight_user, admin_session):
+        """Admin should not be able to list/create weights on another user's pet."""
+        pid = weight_user.pet_id
+        r = admin_session.get(f"{API}/pets/{pid}/weights", timeout=10)
+        assert r.status_code == 404
+        r2 = admin_session.post(f"{API}/pets/{pid}/weights",
+                                json={"date": "2025-01-01", "weight": 5.0}, timeout=10)
+        assert r2.status_code == 404
+
+
+# ---------- Cleanup: delete pet cascades (includes weights) ----------
 class TestZCleanup:
     def test_delete_pet_cascade(self, new_user_session):
         # create our own pet & records (loadscope may separate classes)
@@ -344,12 +434,21 @@ class TestZCleanup:
         new_user_session.post(f"{API}/pets/{pid}/vaccines", json={
             "name": "TEST_Trivalente", "date_given": "2025-01-01", "next_due": nd
         }, timeout=10)
+        # add a weight log so cascade can be verified for weights too
+        new_user_session.post(f"{API}/pets/{pid}/weights", json={
+            "date": "2025-01-01", "weight": 4.5
+        }, timeout=10)
+        wlist = new_user_session.get(f"{API}/pets/{pid}/weights", timeout=10).json()
+        assert len(wlist) == 1
 
         r = new_user_session.delete(f"{API}/pets/{pid}", timeout=10)
         assert r.status_code == 200
         # verify pet gone
         r2 = new_user_session.get(f"{API}/pets/{pid}", timeout=10)
         assert r2.status_code == 404
+        # weights endpoint should now 404 too (pet not found)
+        r3 = new_user_session.get(f"{API}/pets/{pid}/weights", timeout=10)
+        assert r3.status_code == 404
         # upcoming should no longer include items from this pet
         u = new_user_session.get(f"{API}/dashboard/upcoming", timeout=10).json()
         assert not any(i["pet_id"] == pid for i in u)

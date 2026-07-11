@@ -142,6 +142,11 @@ class ChatInput(BaseModel):
     pet_id: Optional[str] = None
 
 
+class WeightInput(BaseModel):
+    date: str
+    weight: float
+
+
 class AdviceInput(BaseModel):
     pet_id: str
 
@@ -267,6 +272,7 @@ async def delete_pet(pet_id: str, user: dict = Depends(get_current_user)):
     await db.visits.delete_many({"pet_id": pet_id})
     await db.vaccines.delete_many({"pet_id": pet_id})
     await db.treatments.delete_many({"pet_id": pet_id})
+    await db.weights.delete_many({"pet_id": pet_id})
     return {"ok": True}
 
 
@@ -343,6 +349,33 @@ async def create_treatment(pet_id: str, input: TreatmentInput, user: dict = Depe
 async def delete_treatment(pet_id: str, item_id: str, user: dict = Depends(get_current_user)):
     await _verify_pet(pet_id, user["user_id"])
     await db.treatments.delete_one({"id": item_id, "pet_id": pet_id})
+    return {"ok": True}
+
+
+# ---------------- Weight logs ----------------
+@api_router.get("/pets/{pet_id}/weights")
+async def list_weights(pet_id: str, user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    return await db.weights.find({"pet_id": pet_id}, {"_id": 0}).sort("date", 1).to_list(1000)
+
+
+@api_router.post("/pets/{pet_id}/weights")
+async def create_weight(pet_id: str, input: WeightInput, user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    doc = {"id": str(uuid.uuid4()), "pet_id": pet_id, **input.model_dump()}
+    await db.weights.insert_one(dict(doc))
+    doc.pop("_id", None)
+    # keep the pet's current weight in sync with the latest measurement
+    latest = await db.weights.find({"pet_id": pet_id}, {"_id": 0}).sort("date", -1).to_list(1)
+    if latest:
+        await db.pets.update_one({"id": pet_id}, {"$set": {"weight": latest[0]["weight"]}})
+    return doc
+
+
+@api_router.delete("/pets/{pet_id}/weights/{item_id}")
+async def delete_weight(pet_id: str, item_id: str, user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    await db.weights.delete_one({"id": item_id, "pet_id": pet_id})
     return {"ok": True}
 
 
