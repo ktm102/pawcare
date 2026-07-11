@@ -1,0 +1,156 @@
+{
+  "theme_preference": "light",
+  "archetype": "ORGANIC & EARTHY",
+  "language": "it",
+  "typography": {
+    "headings": "Manrope",
+    "body": "Outfit",
+    "weights": {
+      "headings": "font-bold tracking-tight",
+      "body": "font-normal leading-relaxed"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight",
+      "h3": "text-xl sm:text-2xl tracking-tight",
+      "h4": "text-lg sm:text-xl",
+      "body": "text-base",
+      "labels": "text-xs tracking-[0.2em] uppercase font-bold text-muted-foreground"
+    },
+    "forbidden_fonts": [
+      "Inter (for headings)",
+      "Roboto",
+      "Open Sans",
+      "Space Grotesk"
+    ]
+  },
+  "colors": {
+    "palette_description": "Warm sand, sage green, and charcoal. Grounded, matte, physical.",
+    "variables": {
+      "light": {
+        "--background": "40 20% 97%",
+        "--foreground": "120 10% 15%",
+        "--card": "40 33% 98%",
+        "--card-foreground": "120 10% 15%",
+        "--popover": "40 33% 98%",
+        "--popover-foreground": "120 10% 15%",
+        "--primary": "140 25% 35%",
+        "--primary-foreground": "40 20% 97%",
+        "--secondary": "25 35% 85%",
+        "--secondary-foreground": "140 25% 25%",
+        "--muted": "40 15% 90%",
+        "--muted-foreground": "120 10% 45%",
+        "--accent": "25 40% 65%",
+        "--accent-foreground": "40 20% 97%",
+        "--destructive": "10 70% 50%",
+        "--destructive-foreground": "40 20% 97%",
+        "--border": "40 15% 85%",
+        "--input": "40 15% 85%",
+        "--ring": "140 25% 35%",
+        "--radius": "0.5rem"
+      },
+      "dark": {
+        "--background": "120 10% 12%",
+        "--foreground": "40 20% 94%",
+        "--card": "120 10% 15%",
+        "--card-foreground": "40 20% 94%",
+        "--popover": "120 10% 15%",
+        "--popover-foreground": "40 20% 94%",
+        "--primary": "140 30% 60%",
+        "--primary-foreground": "120 10% 15%",
+        "--secondary": "120 10% 20%",
+        "--secondary-foreground": "40 20% 94%",
+        "--muted": "120 10% 20%",
+        "--muted-foreground": "40 10% 65%",
+        "--accent": "25 40% 60%",
+        "--accent-foreground": "120 10% 15%",
+        "--destructive": "10 60% 50%",
+        "--destructive-foreground": "40 20% 94%",
+        "--border": "120 10% 20%",
+        "--input": "120 10% 20%",
+        "--ring": "140 30% 60%"
+      }
+    },
+    "forbidden_colors": [
+      "#1B93A4",
+      "#7351B7",
+      "#000000",
+      "#808080"
+    ]
+  },
+  "layouts": {
+    "dashboard_grid": "High Density Grid (Mode B). grid-cols-1 md:grid-cols-3 lg:grid-cols-4 with gap-4 or gap-6. Stretch children with h-full.",
+    "spacing": "Generous Spacing Philosophy. Use p-6, p-8, p-12. Containers with borders MUST have internal padding p-6 or p-8.",
+    "surfaces": "Flat Solid surfaces. Subtle roundness (max 8px border-radius). Use 1px subtle border. No heavy shadows, use flat rectangular or dense styles.",
+    "header": "Solid background with a hard bottom border or Crystal Glass if content scrolls under it. Must be z-50. Never fully transparent.",
+    "alignment": "Mobile-first responsive. Optical alignment. Left-align dense content, lists, forms."
+  },
+  "components": {
+    "forms": "Use Shadcn Input, Select, Form, Checkbox (heavily customized for brand). NEVER use native inputs.",
+    "date_picker": "Shadcn calendar for date pickers (NOT HTML input type='date').",
+    "dropdowns": "Shadcn dropdown-menu (NOT HTML <select>).",
+    "notifications": "Use `sonner` for toast notifications (located in /app/src/components/ui/sonner.tsx).",
+    "charts": "Shadcn chart components or recharts. Must use color-blind-friendly palettes.",
+    "buttons": "Pill-shaped or max 8px border-radius. MUST have hover states (lighter hue of active state color). Focus states must have HIGHER contrast.",
+    "cards": "Flat background, 1px subtle border (border-border), no shadow by default. Hover: slight lift (-translate-y-1), shadow-sm, border darkens."
+  },
+  "visual_enhancers": {
+    "textures": "Subtle grain textures, noise overlays to kill digital flatness.",
+    "motion": "Use framer-motion for micro-interactions. Hover states, press states, focus states, staggered entrance for lists. NEVER use `transition: all`.",
+    "icons": "Use @phosphor-icons/react for Duotone weight, high-end feel. Yarn add @phosphor-icons/react. Do not use AI emojis."
+  },
+  "media": {
+    "image_urls": {
+      "dashboard_hero_owner_dog": {
+        "url": "https://images.pexels.com/photos/5748620/pexels-photo-5748620.jpeg",
+        "description": "African American male sitting on pavement with Akita Inu. Use for welcome section or profile empty state."
+      },
+      "care_guide_cat": {
+        "url": "https://images.pexels.com/photos/31961534/pexels-photo-31961534.jpeg",
+        "description": "Tabby cat snuggled in a blanket. Use for 'Tips on sleep/comfort' or care advice."
+      },
+      "vet_visit_checkup": {
+        "url": "https://images.pexels.com/photos/7468981/pexels-photo-7468981.jpeg",
+        "description": "Veterinarian performing a check-up on a dog. Use for Vet visits log empty state or header."
+      }
+    },
+    "rules": "Images must not exceed 80vh on mobile. Use max-h-[80vh] md:max-h-none. Use text shadow when placing text over images."
+  },
+  "accessibility": {
+    "contrast": "Minimum 4.5:1 for normal text. Use APCA. Tinted neutral greys (never pure black/gray).",
+    "focus": "Animations must not interfere with keyboard navigation. Focus indicators must be prominent.",
+    "motion": "Respect prefers-reduced-motion."
+  },
+  "testing": {
+    "data_testid": "All interactive and key informational elements MUST include a `data-testid` attribute (kebab-case, role-based). e.g., `data-testid=\"add-vet-visit-button\"`."
+  },
+  "instructions_to_main_agent": [
+    "Italian language must be used for all text/copy (e.g., 'Profilo Animale', 'Prossime Scadenze', 'Libreria Guide').",
+    "Implement the ORGANIC & EARTHY archetype palette (Sage Green, Warm Sand, Charcoal).",
+    "Use Manrope for headings and Outfit for body text.",
+    "Prioritize flat, cardless or 8px rounded corners for a clean, trustworthy medical/health dashboard feel.",
+    "Create high-density 'Bento' grids for the dashboard to track upcoming vaccines and antiparasitic treatments.",
+    "Implement Vet Visit Logs, Vaccine Trackers, and AI chat using customized Shadcn components.",
+    "Use @phosphor-icons/react for all iconography.",
+    "Never use generic centered layouts or simplistic gradients.",
+    "Use sonner for notifications (e.g., upcoming due dates).",
+    "Implement specific `data-testid` attributes on all buttons, forms, and actionable items.",
+    "Do not add `.App { text-align: center; }` to the CSS file. Remove default App.css spin animation."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) where appropriate.",
+    "You MUST NOT apply universal transition. Eg: `transition: all`. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms.",
+    "You MUST NOT center align the app container, ie do not add `.App { text-align: center; }` in the css file. This disrupts the human natural reading flow of text.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Subtle grain textures, noise overlays, custom cursors, selection states, and loading animations: separates good from extraordinary.",
+    "Main agent relies on these image URLs. Missing categories (especially sponsor logos) = main agent will use placeholder text which is FORBIDDEN.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Create new components that match the style and conventions of existing components when needed."
+  ]
+}
