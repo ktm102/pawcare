@@ -1011,3 +1011,82 @@ class TestCalendar:
         assert not any(e["title"] in ("TEST_Controllo", "TEST_Antirabbica", "TEST_Antipulci")
                        and e["pet_name"] in ("TEST_CalPet1", "TEST_CalPet2")
                        for e in events)
+
+
+
+# ---------- Admin endpoints (NEW FEATURE - role gating + stats + users table) ----------
+class TestAdmin:
+    """Verify:
+       - GET /api/auth/me returns role='admin' for admin, 'user' otherwise
+       - GET /api/admin/stats + /api/admin/users:
+           - 401 anonymous
+           - 403 with Italian detail for normal user
+           - 200 with expected shape for admin
+    """
+
+    def test_me_returns_role_admin(self, admin_session):
+        r = admin_session.get(f"{API}/auth/me", timeout=10)
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("role") == "admin", f"expected role=admin, got {body}"
+
+    def test_me_returns_role_user_for_normal(self, new_user_session):
+        r = new_user_session.get(f"{API}/auth/me", timeout=10)
+        assert r.status_code == 200
+        assert r.json().get("role") == "user"
+
+    def test_admin_stats_requires_auth(self):
+        r = requests.get(f"{API}/admin/stats", timeout=10)
+        assert r.status_code == 401
+
+    def test_admin_users_requires_auth(self):
+        r = requests.get(f"{API}/admin/users", timeout=10)
+        assert r.status_code == 401
+
+    def test_admin_stats_forbidden_for_non_admin(self, new_user_session):
+        r = new_user_session.get(f"{API}/admin/stats", timeout=10)
+        assert r.status_code == 403, f"expected 403, got {r.status_code}: {r.text}"
+        assert r.json().get("detail") == "Accesso riservato agli amministratori"
+
+    def test_admin_users_forbidden_for_non_admin(self, new_user_session):
+        r = new_user_session.get(f"{API}/admin/users", timeout=10)
+        assert r.status_code == 403
+        assert r.json().get("detail") == "Accesso riservato agli amministratori"
+
+    def test_admin_stats_ok_for_admin(self, admin_session):
+        r = admin_session.get(f"{API}/admin/stats", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        # required keys
+        required = ["total_users", "new_users_7d", "google_users", "email_users",
+                   "push_users", "total_pets", "total_visits", "total_vaccines",
+                   "total_treatments", "total_chat_messages"]
+        for k in required:
+            assert k in data, f"missing stat: {k}"
+            assert isinstance(data[k], int), f"{k} should be int, got {type(data[k])}"
+        # sanity
+        assert data["total_users"] >= 1
+        assert data["email_users"] >= 1  # at least admin
+
+    def test_admin_users_ok_for_admin(self, admin_session):
+        r = admin_session.get(f"{API}/admin/users", timeout=20)
+        assert r.status_code == 200
+        users = r.json()
+        assert isinstance(users, list)
+        assert len(users) >= 1
+        # find admin row
+        admin_row = next((u for u in users if u.get("email") == ADMIN_EMAIL), None)
+        assert admin_row is not None, "admin user missing from /admin/users"
+        # required user fields
+        for k in ["user_id", "email", "name", "auth_provider", "pet_count", "chat_count", "has_push"]:
+            assert k in admin_row, f"missing field: {k}"
+        # no sensitive fields leaked
+        assert "password_hash" not in admin_row
+        assert "_id" not in admin_row
+        # counts are ints, has_push is bool
+        assert isinstance(admin_row["pet_count"], int)
+        assert isinstance(admin_row["chat_count"], int)
+        assert isinstance(admin_row["has_push"], bool)
+        # role field present for admin row
+        assert admin_row.get("role") == "admin"
+

@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
 import { pushSupported, getSubscriptionStatus, subscribeToPush, unsubscribeFromPush } from "@/lib/push";
-import { PawPrint, House, BookOpen, ChatCircleDots, SignOut, Bell, BellSlash, CalendarBlank } from "@phosphor-icons/react";
+import InstallBanner from "@/components/InstallBanner";
+import { PawPrint, House, BookOpen, ChatCircleDots, SignOut, Bell, BellSlash, CalendarBlank, ChartBar } from "@phosphor-icons/react";
 
-const nav = [
+const baseNav = [
   { to: "/dashboard", label: "Dashboard", icon: House },
   { to: "/calendario", label: "Calendario", icon: CalendarBlank },
   { to: "/guide", label: "Guide", icon: BookOpen },
@@ -21,6 +22,10 @@ export default function Layout({ children }) {
   const [notifOn, setNotifOn] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
   const supported = pushSupported();
+
+  const nav = user?.role === "admin"
+    ? [...baseNav, { to: "/admin", label: "Admin", icon: ChartBar }]
+    : baseNav;
 
   useEffect(() => {
     if (supported) getSubscriptionStatus().then(setNotifOn).catch(() => {});
@@ -104,9 +109,12 @@ export default function Layout({ children }) {
         </div>
       </header>
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 relative z-10">{children}</main>
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 relative z-10">
+        <InstallBanner />
+        {children}
+      </main>
 
-      <nav className="md:hidden sticky bottom-0 z-50 bg-card border-t border-border grid grid-cols-4">
+      <nav className="md:hidden sticky bottom-0 z-50 bg-card border-t border-border grid" style={{ gridTemplateColumns: `repeat(${nav.length}, minmax(0, 1fr))` }}>
         {nav.map((n) => {
           const active = location.pathname.startsWith(n.to);
           const Icon = n.icon;

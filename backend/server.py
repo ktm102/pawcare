@@ -296,7 +296,50 @@ async def google_session(request: Request, response: Response):
 
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"user_id": user["user_id"], "email": user["email"], "name": user["name"], "picture": user.get("picture", "")}
+    return {"user_id": user["user_id"], "email": user["email"], "name": user["name"],
+            "picture": user.get("picture", ""), "role": user.get("role", "user")}
+
+
+def _require_admin(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Accesso riservato agli amministratori")
+
+
+@api_router.get("/admin/stats")
+async def admin_stats(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    now = datetime.now(timezone.utc)
+    week_ago = (now - timedelta(days=7)).isoformat()
+    total_users = await db.users.count_documents({})
+    new_users_7d = await db.users.count_documents({"created_at": {"$gte": week_ago}})
+    google_users = await db.users.count_documents({"auth_provider": "google"})
+    email_users = await db.users.count_documents({"auth_provider": "email"})
+    push_users = len(await db.push_subscriptions.distinct("user_id"))
+    return {
+        "total_users": total_users,
+        "new_users_7d": new_users_7d,
+        "google_users": google_users,
+        "email_users": email_users,
+        "push_users": push_users,
+        "total_pets": await db.pets.count_documents({}),
+        "total_visits": await db.visits.count_documents({}),
+        "total_vaccines": await db.vaccines.count_documents({}),
+        "total_treatments": await db.treatments.count_documents({}),
+        "total_documents": await db.documents.count_documents({"is_deleted": False}),
+        "total_chat_messages": await db.chat_messages.count_documents({}),
+    }
+
+
+@api_router.get("/admin/users")
+async def admin_users(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+    for u in users:
+        uid = u["user_id"]
+        u["pet_count"] = await db.pets.count_documents({"user_id": uid})
+        u["chat_count"] = await db.chat_messages.count_documents({"user_id": uid, "role": "user"})
+        u["has_push"] = await db.push_subscriptions.count_documents({"user_id": uid}) > 0
+    return users
 
 
 @api_router.post("/auth/logout")

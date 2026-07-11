@@ -9,6 +9,7 @@ import PetDetail from "@/pages/PetDetail";
 import Guides from "@/pages/Guides";
 import Assistant from "@/pages/Assistant";
 import Calendar from "@/pages/Calendar";
+import Admin from "@/pages/Admin";
 import Layout from "@/components/Layout";
 import { PawPrint } from "@phosphor-icons/react";
 
@@ -48,6 +49,7 @@ function AppRouter() {
       <Route path="/calendario" element={<Protected><Calendar /></Protected>} />
       <Route path="/guide" element={<Protected><Guides /></Protected>} />
       <Route path="/assistente" element={<Protected><Assistant /></Protected>} />
+      <Route path="/admin" element={<Protected><Admin /></Protected>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
