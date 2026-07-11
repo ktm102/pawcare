@@ -437,14 +437,23 @@ async def ai_chat(input: ChatInput, user: dict = Depends(get_current_user)):
     ctx = ""
     if input.pet_id:
         ctx = await _pet_context(input.pet_id, user["user_id"])
-    system = "Sei PawCare AI, un assistente veterinario amichevole. Rispondi in italiano con consigli pratici su cura, alimentazione, vaccini e prevenzione per animali domestici. Ricorda di consigliare una visita veterinaria per problemi di salute seri."
+    system = "Sei PawCare AI, un assistente veterinario amichevole. Rispondi in italiano con consigli pratici su cura, alimentazione, vaccini e prevenzione per animali domestici. Ricorda il contesto della conversazione precedente e le informazioni già fornite dall'utente. Consiglia una visita veterinaria per problemi di salute seri."
     if ctx:
         system += f" Contesto animale: {ctx}"
+    # Build conversation history from DB (last 20 messages) for context memory
+    history = await db.chat_messages.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    history.reverse()
+    initial_messages = [{"role": "system", "content": system}]
+    for m in history:
+        initial_messages.append({"role": m["role"], "content": m["content"]})
     # persist user message
     await db.chat_messages.insert_one({
         "id": str(uuid.uuid4()), "user_id": user["user_id"], "role": "user",
         "content": input.message, "created_at": datetime.now(timezone.utc).isoformat()})
-    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user['user_id']}", system_message=system).with_model("anthropic", "claude-sonnet-4-6")
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user['user_id']}",
+                   system_message=system, initial_messages=initial_messages).with_model("anthropic", "claude-sonnet-4-6")
     resp = await chat.send_message(UserMessage(text=input.message))
     await db.chat_messages.insert_one({
         "id": str(uuid.uuid4()), "user_id": user["user_id"], "role": "assistant",

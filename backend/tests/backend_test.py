@@ -256,6 +256,78 @@ class TestAI:
         assert "user" in roles and "assistant" in roles
 
 
+# ---------- AI Chat Memory (multi-turn context) - BUG FIX VERIFICATION ----------
+class TestAIChatMemory:
+    """Verify the AI assistant retains context across multiple turns via initial_messages."""
+
+    @pytest.fixture(scope="class")
+    def fresh_chat_session(self):
+        """Register a brand-new user so DB chat history is empty for a clean test."""
+        s = requests.Session()
+        email = f"test_mem_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Memory Tester"},
+                   timeout=15)
+        assert r.status_code == 200, f"register failed: {r.text}"
+        # Sanity: history should be empty
+        h = s.get(f"{API}/ai/chat/history", timeout=10)
+        assert h.status_code == 200
+        assert h.json() == []
+        return s
+
+    def test_multi_turn_context_recall(self, fresh_chat_session):
+        s = fresh_chat_session
+        # Turn 1 - provide breed + problem
+        r1 = s.post(f"{API}/ai/chat",
+                    json={"message": "Ho un Golden Retriever che si gratta molto le orecchie."},
+                    timeout=120)
+        assert r1.status_code == 200, f"chat turn1 failed: {r1.text[:500]}"
+        reply1 = r1.json()["reply"]
+        assert isinstance(reply1, str) and len(reply1) > 20
+
+        # Turn 2 - ask the model to recall what was said
+        r2 = s.post(f"{API}/ai/chat",
+                    json={"message": "Che razza di cane ho e qual era il problema che ti ho descritto?"},
+                    timeout=120)
+        assert r2.status_code == 200, f"chat turn2 failed: {r2.text[:500]}"
+        reply2 = r2.json()["reply"].lower()
+        print(f"\n[MEMORY TEST] Turn2 reply:\n{r2.json()['reply']}\n")
+
+        # Assistant must recall the breed and the problem from turn 1
+        assert "golden retriever" in reply2, f"Breed not recalled. Reply: {reply2[:400]}"
+        assert ("orecchi" in reply2 or "grat" in reply2 or "prurito" in reply2), \
+            f"Problem (ear scratching) not recalled. Reply: {reply2[:400]}"
+
+    def test_third_turn_still_has_context(self, fresh_chat_session):
+        s = fresh_chat_session
+        # Turn 3 - narrow follow-up that only makes sense with memory
+        r = s.post(f"{API}/ai/chat",
+                   json={"message": "Ha 5 anni. Cosa mi consigli per il suo problema alle orecchie?"},
+                   timeout=120)
+        assert r.status_code == 200
+        reply = r.json()["reply"].lower()
+        print(f"\n[MEMORY TEST] Turn3 reply:\n{r.json()['reply']}\n")
+        # It should give advice about ears / scratching (not generic off-topic)
+        assert ("orecchi" in reply or "auricol" in reply or "prurito" in reply
+                or "otit" in reply or "veterinar" in reply), \
+            f"Turn3 lost topical context. Reply: {reply[:400]}"
+
+    def test_history_persisted_and_ordered(self, fresh_chat_session):
+        s = fresh_chat_session
+        h = s.get(f"{API}/ai/chat/history", timeout=10)
+        assert h.status_code == 200
+        msgs = h.json()
+        # 3 user + 3 assistant messages
+        assert len(msgs) == 6, f"expected 6 messages, got {len(msgs)}: {[m['role'] for m in msgs]}"
+        roles = [m["role"] for m in msgs]
+        assert roles == ["user", "assistant", "user", "assistant", "user", "assistant"]
+        # First user message must be the Golden Retriever one
+        assert "golden retriever" in msgs[0]["content"].lower()
+        # Timestamps monotonically non-decreasing
+        ts = [m["created_at"] for m in msgs]
+        assert ts == sorted(ts)
+
+
 # ---------- Cleanup: delete pet cascades ----------
 class TestZCleanup:
     def test_delete_pet_cascade(self, new_user_session):
