@@ -144,7 +144,7 @@ class ChatInput(BaseModel):
 
 class WeightInput(BaseModel):
     date: str
-    weight: float
+    weight: float = Field(gt=0)
 
 
 class AdviceInput(BaseModel):

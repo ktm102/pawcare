@@ -316,7 +316,7 @@ function RecordDialog({ kind, petId, onClose, onSaved }) {
           {kind === "weight" && (
             <>
               <Field label="Data"><Input type="date" onChange={(e) => set("date", e.target.value)} data-testid="weight-date-input" /></Field>
-              <Field label="Peso (kg)"><Input type="number" step="0.1" onChange={(e) => set("weight", e.target.value)} placeholder="12.5" data-testid="weight-value-input" /></Field>
+              <Field label="Peso (kg)"><Input type="number" step="0.1" min="0.1" onChange={(e) => set("weight", e.target.value)} placeholder="12.5" data-testid="weight-value-input" /></Field>
             </>
           )}
           <Button onClick={save} disabled={busy} className="w-full rounded-full" data-testid="save-record-button">{busy ? "Salvataggio..." : "Salva"}</Button>
