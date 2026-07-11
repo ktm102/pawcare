@@ -158,7 +158,7 @@ export default function PetDetail() {
             <RecordRow key={v.id} onDelete={() => delRecord("visit", v.id)} testid="visit-row">
               <div>
                 <p className="font-semibold">{v.reason}</p>
-                <p className="text-sm text-muted-foreground">{fmt(v.date)}{v.veterinarian ? ` · Dr. ${v.veterinarian}` : ""}</p>
+                <p className="text-sm text-muted-foreground">{fmt(v.date)}{v.veterinarian ? ` · ${v.veterinarian}` : ""}</p>
                 {v.notes && <p className="text-sm mt-1">{v.notes}</p>}
               </div>
             </RecordRow>
