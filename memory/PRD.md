@@ -29,10 +29,12 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - Weight tracking + trend chart (recharts)
 - PWA installable (manifest + service worker + icons)
 - Web Push notifications: VAPID, subscribe/unsubscribe, reminders (due within 7 days, deduped)
-- Background scheduler (APScheduler) daily 08:00 UTC sending reminders even when app closed + admin-only /push/run-batch
-- Tested: 54/54 backend, 100% frontend across 5 iterations
+- Background scheduler (APScheduler) daily 08:00 UTC + admin /push/run-batch
+- Medical document attachments per pet (Emergent Object Storage: upload/list/download/soft-delete, 15MB cap, owner isolation)
+- Multi-pet calendar view (/calendario): month grid + legend + month list aggregating visits/vaccines/treatments
+- Tested: 71/71 backend, 100% frontend across 6 iterations
 
 ## Backlog / Next
 - P1: Email reminders alternative (Resend/SendGrid)
-- P2: Medical document attachments, multi-pet calendar, object storage for photos
-- P2: Migrate deprecated on_event to lifespan; async httpx for Google session
+- P2: Configurable reminder lead-time & send hour per user
+- P2: Migrate deprecated on_event to lifespan; async httpx for sync requests calls
