@@ -23,17 +23,16 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - Auth (email/password + Google), seeded admin (admin@pawcare.it / admin123)
 - Pets CRUD with photo (base64), age auto-calc
 - Visits/Vaccines/Treatments CRUD per pet
-- Dashboard with pet grid + upcoming due dates (sorted by days_left)
-- AI advice endpoint + AI chat with persistent history + CONVERSATION MEMORY (initial_messages)
-- Guides library (8 seeded guides) with species/age filter
-- Weight tracking + trend chart (recharts) per pet
-- PWA: installable (manifest.json + service worker), app icons
-- Web Push notifications: VAPID keys, subscribe/unsubscribe, reminders for items due within 7 days (deduped), in-app toggle in header
-- Full design system (Organic & Earthy theme, Manrope/Outfit fonts)
-- Tested: 47/47 backend, 100% frontend flows across 4 iterations
+- Dashboard with pet grid + upcoming due dates
+- AI advice + AI chat with conversation memory + STREAMING token-by-token (SSE /ai/chat/stream)
+- Guides library with species/age filter
+- Weight tracking + trend chart (recharts)
+- PWA installable (manifest + service worker + icons)
+- Web Push notifications: VAPID, subscribe/unsubscribe, reminders (due within 7 days, deduped)
+- Background scheduler (APScheduler) daily 08:00 UTC sending reminders even when app closed + admin-only /push/run-batch
+- Tested: 54/54 backend, 100% frontend across 5 iterations
 
 ## Backlog / Next
-- P1: Email reminders as alternative to web push (Resend/SendGrid)
-- P1: Streaming AI chat responses (SSE) for token-by-token UX
-- P1: Background scheduler (APScheduler) to send push reminders even when app is closed (currently triggered on dashboard load)
-- P2: Medical document attachments, multi-pet calendar view, object storage for photos
+- P1: Email reminders alternative (Resend/SendGrid)
+- P2: Medical document attachments, multi-pet calendar, object storage for photos
+- P2: Migrate deprecated on_event to lifespan; async httpx for Google session

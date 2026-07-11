@@ -576,9 +576,10 @@ async def ai_chat_stream(input: ChatInput, user: dict = Depends(get_current_user
         except Exception as e:
             logger.warning(f"AI stream error: {e}")
             yield f"data: {_json.dumps({'error': True})}\n\n"
-        await db.chat_messages.insert_one({
-            "id": str(uuid.uuid4()), "user_id": user_id, "role": "assistant",
-            "content": full, "created_at": datetime.now(timezone.utc).isoformat()})
+        if full:
+            await db.chat_messages.insert_one({
+                "id": str(uuid.uuid4()), "user_id": user_id, "role": "assistant",
+                "content": full, "created_at": datetime.now(timezone.utc).isoformat()})
         yield f"data: {_json.dumps({'done': True})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
