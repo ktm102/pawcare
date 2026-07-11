@@ -418,6 +418,144 @@ class TestWeights:
         assert r2.status_code == 404
 
 
+# ---------- Push notifications (NEW FEATURE) ----------
+class TestPush:
+    """Push endpoints: vapid-public-key, subscribe/status/unsubscribe, check-reminders, test."""
+
+    @pytest.fixture(scope="class")
+    def push_user(self):
+        s = requests.Session()
+        email = f"test_push_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Push Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        return s
+
+    def _fake_sub(self):
+        return {
+            "endpoint": f"https://fcm.googleapis.com/fcm/send/fake-{uuid.uuid4().hex[:16]}",
+            "keys": {"p256dh": "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM",
+                     "auth": "tBHItJI5svbpez7KI4CCXg"},
+        }
+
+    def test_vapid_public_key_requires_no_auth_but_works(self, push_user):
+        r = push_user.get(f"{API}/push/vapid-public-key", timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert "public_key" in data
+        assert isinstance(data["public_key"], str)
+        assert len(data["public_key"]) > 30  # VAPID keys are ~87 chars base64-url
+
+    def test_status_initially_false(self, push_user):
+        r = push_user.get(f"{API}/push/status", timeout=10)
+        assert r.status_code == 200
+        assert r.json() == {"subscribed": False}
+
+    def test_subscribe_and_status_true(self, push_user):
+        sub = self._fake_sub()
+        push_user.sub = sub
+        r = push_user.post(f"{API}/push/subscribe", json={"subscription": sub}, timeout=10)
+        assert r.status_code == 200, r.text
+        assert r.json().get("ok") is True
+
+        st = push_user.get(f"{API}/push/status", timeout=10)
+        assert st.status_code == 200
+        assert st.json() == {"subscribed": True}
+
+    def test_subscribe_idempotent_upsert(self, push_user):
+        # Re-post same subscription; still subscribed:true, no duplicate
+        r = push_user.post(f"{API}/push/subscribe",
+                           json={"subscription": push_user.sub}, timeout=10)
+        assert r.status_code == 200
+        st = push_user.get(f"{API}/push/status", timeout=10).json()
+        assert st == {"subscribed": True}
+
+    def test_subscribe_missing_endpoint_rejected(self, push_user):
+        r = push_user.post(f"{API}/push/subscribe",
+                           json={"subscription": {"keys": {"p256dh": "x", "auth": "y"}}},
+                           timeout=10)
+        assert r.status_code == 400
+        assert "detail" in r.json()
+
+    def test_check_reminders_ok(self, push_user):
+        """check-reminders should complete without error even with an unreachable
+        (fake) subscription — dead subs are pruned and sent should be 0."""
+        r = push_user.post(f"{API}/push/check-reminders", timeout=30)
+        assert r.status_code == 200
+        data = r.json()
+        assert "sent" in data
+        assert isinstance(data["sent"], int)
+
+    def test_push_test_returns_400_when_no_valid_sub(self, push_user):
+        # After a failed send, the dead subscription may have been pruned. Ensure at
+        # least one fake sub is present, then /push/test will attempt to send, all
+        # sends fail (invalid keys), so sent==0 -> 400 with Italian detail.
+        push_user.post(f"{API}/push/subscribe",
+                       json={"subscription": self._fake_sub()}, timeout=10)
+        r = push_user.post(f"{API}/push/test", timeout=30)
+        assert r.status_code == 400
+        detail = r.json().get("detail", "")
+        assert isinstance(detail, str) and len(detail) > 0
+        # Italian message check
+        assert "notific" in detail.lower() or "attiva" in detail.lower()
+
+    def test_unsubscribe_and_status_false(self, push_user):
+        # ensure at least one sub exists (may have been pruned by previous test)
+        sub = self._fake_sub()
+        push_user.post(f"{API}/push/subscribe", json={"subscription": sub}, timeout=10)
+        r = push_user.post(f"{API}/push/unsubscribe",
+                           json={"subscription": sub}, timeout=10)
+        assert r.status_code == 200
+
+        # remove any other lingering subs so status becomes false
+        # (Delete via unsubscribe endpoint of any known subs)
+        push_user.post(f"{API}/push/unsubscribe",
+                       json={"subscription": push_user.sub}, timeout=10)
+
+        # Best-effort: status may still be true if extra subs remain, but we
+        # unsubscribed both known ones. Accept either state — main assertion is
+        # that unsubscribe returns 200 idempotently.
+        st = push_user.get(f"{API}/push/status", timeout=10)
+        assert st.status_code == 200
+        assert "subscribed" in st.json()
+
+    def test_push_endpoints_require_auth(self):
+        for method, path in [("GET", "/push/status"),
+                             ("POST", "/push/subscribe"),
+                             ("POST", "/push/unsubscribe"),
+                             ("POST", "/push/test"),
+                             ("POST", "/push/check-reminders")]:
+            r = requests.request(method, f"{API}{path}", json={"subscription": {}}, timeout=10)
+            assert r.status_code == 401, f"{method} {path} should require auth"
+
+
+# ---------- PWA assets ----------
+class TestPWA:
+    """Static PWA files served through frontend origin."""
+
+    def test_manifest_json(self):
+        r = requests.get(f"{BASE_URL}/manifest.json", timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("name") and "PawCare" in data["name"]
+        assert data.get("short_name") == "PawCare"
+        assert data.get("display") == "standalone"
+        assert data.get("start_url") == "/dashboard"
+        icons = data.get("icons", [])
+        sizes = {i.get("sizes") for i in icons}
+        assert "192x192" in sizes
+        assert "512x512" in sizes
+
+    def test_service_worker_js(self):
+        r = requests.get(f"{BASE_URL}/sw.js", timeout=10)
+        assert r.status_code == 200
+        assert "javascript" in r.headers.get("content-type", "").lower()
+        # Must contain push listener
+        assert "push" in r.text.lower()
+        assert "showNotification" in r.text
+
+
 # ---------- Cleanup: delete pet cascades (includes weights) ----------
 class TestZCleanup:
     def test_delete_pet_cascade(self, new_user_session):

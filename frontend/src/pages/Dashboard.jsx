@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import PetDialog from "@/components/PetDialog";
+import { checkReminders } from "@/lib/push";
 import { Plus, Dog, Cat, Syringe, ShieldCheck, CalendarBlank, WarningCircle } from "@phosphor-icons/react";
 
 function DueBadge({ days }) {
@@ -35,6 +36,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { checkReminders(); }, []);
 
   return (
     <div className="space-y-10">

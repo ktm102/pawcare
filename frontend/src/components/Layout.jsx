@@ -1,9 +1,11 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { PawPrint, House, BookOpen, ChatCircleDots, SignOut } from "@phosphor-icons/react";
+import { toast } from "sonner";
+import { pushSupported, getSubscriptionStatus, subscribeToPush, unsubscribeFromPush } from "@/lib/push";
+import { PawPrint, House, BookOpen, ChatCircleDots, SignOut, Bell, BellSlash } from "@phosphor-icons/react";
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: House },
@@ -15,6 +17,32 @@ export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const [notifOn, setNotifOn] = useState(false);
+  const [notifBusy, setNotifBusy] = useState(false);
+  const supported = pushSupported();
+
+  useEffect(() => {
+    if (supported) getSubscriptionStatus().then(setNotifOn).catch(() => {});
+  }, [supported]);
+
+  const toggleNotif = async () => {
+    setNotifBusy(true);
+    try {
+      if (notifOn) {
+        await unsubscribeFromPush();
+        setNotifOn(false);
+        toast.success("Notifiche disattivate");
+      } else {
+        await subscribeToPush();
+        setNotifOn(true);
+        toast.success("Notifiche attivate! Ti avviseremo delle prossime scadenze.");
+      }
+    } catch (e) {
+      toast.error(e.message || "Impossibile gestire le notifiche");
+    } finally {
+      setNotifBusy(false);
+    }
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -49,6 +77,19 @@ export default function Layout({ children }) {
             })}
           </nav>
           <div className="flex items-center gap-3">
+            {supported && (
+              <Button
+                variant={notifOn ? "default" : "ghost"}
+                size="icon"
+                className="rounded-full"
+                onClick={toggleNotif}
+                disabled={notifBusy}
+                data-testid="notifications-toggle"
+                title={notifOn ? "Disattiva notifiche" : "Attiva notifiche"}
+              >
+                {notifOn ? <Bell size={20} weight="fill" /> : <BellSlash size={20} />}
+              </Button>
+            )}
             <Avatar className="h-9 w-9 border border-border">
               <AvatarImage src={user?.picture} />
               <AvatarFallback className="bg-secondary text-secondary-foreground text-sm">

@@ -20,6 +20,8 @@ import secrets
 from datetime import datetime, timezone, timedelta
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from pywebpush import webpush, WebPushException
+import json as _json
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -29,6 +31,9 @@ db = client[os.environ['DB_NAME']]
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 EMERGENT_LLM_KEY = os.environ['EMERGENT_LLM_KEY']
+VAPID_PUBLIC_KEY = os.environ['VAPID_PUBLIC_KEY']
+VAPID_PRIVATE_KEY = os.environ['VAPID_PRIVATE_KEY']
+VAPID_CLAIM_EMAIL = os.environ['VAPID_CLAIM_EMAIL']
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -149,6 +154,41 @@ class WeightInput(BaseModel):
 
 class AdviceInput(BaseModel):
     pet_id: str
+
+
+class PushSubscriptionInput(BaseModel):
+    subscription: dict
+
+
+def _send_web_push(subscription_info: dict, payload: dict) -> bool:
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=_json.dumps(payload),
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+        )
+        return True
+    except WebPushException as e:
+        logger.warning(f"WebPush failed: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"WebPush error: {e}")
+        return False
+
+
+async def send_push_to_user(user_id: str, title: str, body: str, url: str = "/dashboard"):
+    subs = await db.push_subscriptions.find({"user_id": user_id}, {"_id": 0}).to_list(100)
+    payload = {"title": title, "body": body, "url": url}
+    sent = 0
+    for s in subs:
+        ok = _send_web_push(s["subscription"], payload)
+        if ok:
+            sent += 1
+        else:
+            # remove dead subscription
+            await db.push_subscriptions.delete_one({"user_id": user_id, "endpoint": s.get("endpoint")})
+    return sent
 
 
 def calc_age(birth_date: str) -> int:
@@ -500,11 +540,76 @@ async def chat_history(user: dict = Depends(get_current_user)):
     return msgs
 
 
+# ---------------- Push notifications ----------------
+@api_router.get("/push/vapid-public-key")
+async def vapid_public_key():
+    return {"public_key": VAPID_PUBLIC_KEY}
+
+
+@api_router.post("/push/subscribe")
+async def push_subscribe(input: PushSubscriptionInput, user: dict = Depends(get_current_user)):
+    sub = input.subscription
+    endpoint = sub.get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Subscription non valida")
+    await db.push_subscriptions.update_one(
+        {"user_id": user["user_id"], "endpoint": endpoint},
+        {"$set": {"user_id": user["user_id"], "endpoint": endpoint, "subscription": sub,
+                  "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api_router.post("/push/unsubscribe")
+async def push_unsubscribe(input: PushSubscriptionInput, user: dict = Depends(get_current_user)):
+    endpoint = input.subscription.get("endpoint")
+    await db.push_subscriptions.delete_one({"user_id": user["user_id"], "endpoint": endpoint})
+    return {"ok": True}
+
+
+@api_router.get("/push/status")
+async def push_status(user: dict = Depends(get_current_user)):
+    count = await db.push_subscriptions.count_documents({"user_id": user["user_id"]})
+    return {"subscribed": count > 0}
+
+
+@api_router.post("/push/test")
+async def push_test(user: dict = Depends(get_current_user)):
+    sent = await send_push_to_user(user["user_id"], "PawCare 🐾", "Le notifiche sono attive! Ti avviseremo delle prossime scadenze.")
+    if sent == 0:
+        raise HTTPException(status_code=400, detail="Nessuna notifica inviata. Attiva le notifiche.")
+    return {"sent": sent}
+
+
+@api_router.post("/push/check-reminders")
+async def push_check_reminders(user: dict = Depends(get_current_user)):
+    """Send push reminders for vaccines/treatments due within 7 days, deduped."""
+    items = await upcoming(user)
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    sent = 0
+    for item in items:
+        if item["days_left"] < 0 or item["days_left"] > 7:
+            continue
+        dedupe_key = f"{item['type']}:{item['pet_id']}:{item['due_date']}"
+        already = await db.push_sent.find_one({"user_id": user["user_id"], "key": dedupe_key, "sent_date": today_iso})
+        if already:
+            continue
+        kind = "Vaccino" if item["type"] == "vaccine" else "Antiparassitario"
+        when = "oggi" if item["days_left"] == 0 else f"tra {item['days_left']} giorni"
+        s = await send_push_to_user(
+            user["user_id"], f"Promemoria: {kind} in scadenza",
+            f"{item['title']} per {item['pet_name']} è previsto {when}.",
+            f"/pet/{item['pet_id']}")
+        if s:
+            sent += 1
+            await db.push_sent.insert_one({"user_id": user["user_id"], "key": dedupe_key, "sent_date": today_iso})
+    return {"sent": sent}
+
+
 @api_router.get("/")
 async def root():
     return {"message": "PawCare API"}
-
-
 app.include_router(api_router)
 
 app.add_middleware(

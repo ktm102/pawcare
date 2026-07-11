@@ -1,0 +1,15 @@
+{
+  "short_name": "PawCare",
+  "name": "PawCare - Salute dei tuoi animali",
+  "description": "Tieni traccia di visite, vaccini e trattamenti dei tuoi animali domestici, con promemoria e consigli AI.",
+  "icons": [
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ],
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#4a6b52",
+  "background_color": "#f7f5f0"
+}
