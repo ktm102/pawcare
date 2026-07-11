@@ -19,8 +19,9 @@ import requests
 import secrets
 from datetime import datetime, timezone, timedelta
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 from pywebpush import webpush, WebPushException
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import json as _json
 
 # MongoDB connection
@@ -540,6 +541,50 @@ async def chat_history(user: dict = Depends(get_current_user)):
     return msgs
 
 
+@api_router.post("/ai/chat/stream")
+async def ai_chat_stream(input: ChatInput, user: dict = Depends(get_current_user)):
+    ctx = ""
+    if input.pet_id:
+        ctx = await _pet_context(input.pet_id, user["user_id"])
+    system = "Sei PawCare AI, un assistente veterinario amichevole. Rispondi in italiano con consigli pratici su cura, alimentazione, vaccini e prevenzione per animali domestici. Ricorda il contesto della conversazione precedente e le informazioni già fornite dall'utente. Consiglia una visita veterinaria per problemi di salute seri."
+    if ctx:
+        system += f" Contesto animale: {ctx}"
+    history = await db.chat_messages.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(20)
+    history.reverse()
+    initial_messages = [{"role": "system", "content": system}]
+    for m in history:
+        initial_messages.append({"role": m["role"], "content": m["content"]})
+    await db.chat_messages.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["user_id"], "role": "user",
+        "content": input.message, "created_at": datetime.now(timezone.utc).isoformat()})
+    user_id = user["user_id"]
+    message_text = input.message
+
+    async def event_generator():
+        chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user_id}",
+                       system_message=system, initial_messages=initial_messages).with_model("anthropic", "claude-sonnet-4-6")
+        full = ""
+        try:
+            async for event in chat.stream_message(UserMessage(text=message_text)):
+                if isinstance(event, TextDelta):
+                    full += event.content
+                    yield f"data: {_json.dumps({'delta': event.content})}\n\n"
+                elif isinstance(event, StreamDone):
+                    break
+        except Exception as e:
+            logger.warning(f"AI stream error: {e}")
+            yield f"data: {_json.dumps({'error': True})}\n\n"
+        await db.chat_messages.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user_id, "role": "assistant",
+            "content": full, "created_at": datetime.now(timezone.utc).isoformat()})
+        yield f"data: {_json.dumps({'done': True})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ---------------- Push notifications ----------------
 @api_router.get("/push/vapid-public-key")
 async def vapid_public_key():
@@ -585,26 +630,53 @@ async def push_test(user: dict = Depends(get_current_user)):
 @api_router.post("/push/check-reminders")
 async def push_check_reminders(user: dict = Depends(get_current_user)):
     """Send push reminders for vaccines/treatments due within 7 days, deduped."""
-    items = await upcoming(user)
+    sent = await _send_reminders_for_user(user["user_id"])
+    return {"sent": sent}
+
+
+async def _send_reminders_for_user(user_id: str) -> int:
+    items = await upcoming({"user_id": user_id})
     today_iso = datetime.now(timezone.utc).date().isoformat()
     sent = 0
     for item in items:
         if item["days_left"] < 0 or item["days_left"] > 7:
             continue
         dedupe_key = f"{item['type']}:{item['pet_id']}:{item['due_date']}"
-        already = await db.push_sent.find_one({"user_id": user["user_id"], "key": dedupe_key, "sent_date": today_iso})
+        already = await db.push_sent.find_one({"user_id": user_id, "key": dedupe_key, "sent_date": today_iso})
         if already:
             continue
         kind = "Vaccino" if item["type"] == "vaccine" else "Antiparassitario"
         when = "oggi" if item["days_left"] == 0 else f"tra {item['days_left']} giorni"
         s = await send_push_to_user(
-            user["user_id"], f"Promemoria: {kind} in scadenza",
+            user_id, f"Promemoria: {kind} in scadenza",
             f"{item['title']} per {item['pet_name']} è previsto {when}.",
             f"/pet/{item['pet_id']}")
         if s:
             sent += 1
-            await db.push_sent.insert_one({"user_id": user["user_id"], "key": dedupe_key, "sent_date": today_iso})
-    return {"sent": sent}
+            await db.push_sent.insert_one({"user_id": user_id, "key": dedupe_key, "sent_date": today_iso})
+    return sent
+
+
+async def send_all_reminders() -> int:
+    """Background job: send due-date reminders to every user with a push subscription."""
+    user_ids = await db.push_subscriptions.distinct("user_id")
+    total = 0
+    for uid in user_ids:
+        try:
+            total += await _send_reminders_for_user(uid)
+        except Exception as e:
+            logger.warning(f"Reminder batch error for {uid}: {e}")
+    logger.info(f"Reminder batch complete: {total} notifications sent across {len(user_ids)} users")
+    return total
+
+
+@api_router.post("/push/run-batch")
+async def push_run_batch(user: dict = Depends(get_current_user)):
+    """Manually trigger the reminder batch for all users (admin only)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+    total = await send_all_reminders()
+    return {"total": total}
 
 
 @api_router.get("/")
@@ -621,6 +693,9 @@ app.add_middleware(
 )
 
 
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
@@ -634,8 +709,16 @@ async def startup():
             "name": "Admin", "password_hash": hash_password(admin_password),
             "picture": "", "auth_provider": "email", "role": "admin",
             "created_at": datetime.now(timezone.utc).isoformat()})
+    # Daily reminder job at 08:00 UTC — sends push even when the app is closed
+    if not scheduler.running:
+        scheduler.add_job(send_all_reminders, "cron", hour=8, minute=0,
+                          id="daily_reminders", replace_existing=True)
+        scheduler.start()
+        logger.info("Reminder scheduler started (daily 08:00 UTC)")
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
     client.close()

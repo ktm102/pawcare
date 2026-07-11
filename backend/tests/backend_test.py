@@ -590,3 +590,157 @@ class TestZCleanup:
         # upcoming should no longer include items from this pet
         u = new_user_session.get(f"{API}/dashboard/upcoming", timeout=10).json()
         assert not any(i["pet_id"] == pid for i in u)
+
+
+
+# ---------- AI Chat Streaming (NEW FEATURE - SSE) ----------
+import json as _json
+
+
+class TestAIChatStream:
+    """Verify POST /api/ai/chat/stream is a real SSE stream that:
+       1) Returns text/event-stream content-type
+       2) Emits at least one `data: {"delta": ...}` chunk
+       3) Ends with `data: {"done": true}`
+       4) Persists both user + assistant messages to /ai/chat/history
+       5) Requires auth (401 when anonymous)
+    """
+
+    @pytest.fixture(scope="class")
+    def stream_user(self):
+        s = requests.Session()
+        email = f"test_stream_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Stream Tester"},
+                   timeout=15)
+        assert r.status_code == 200, f"register failed: {r.text}"
+        s.email = email
+        return s
+
+    def test_stream_requires_auth(self):
+        r = requests.post(f"{API}/ai/chat/stream",
+                          json={"message": "ciao"}, timeout=15)
+        assert r.status_code == 401
+
+    def test_stream_emits_deltas_and_done(self, stream_user):
+        # History before send
+        h_before = stream_user.get(f"{API}/ai/chat/history", timeout=10).json()
+        n_before = len(h_before)
+
+        with stream_user.post(
+            f"{API}/ai/chat/stream",
+            json={"message": "Come si chiama la mia razza preferita di gatto? Rispondi brevemente."},
+            stream=True, timeout=120,
+        ) as r:
+            assert r.status_code == 200, f"stream failed: {r.text[:400]}"
+            ctype = r.headers.get("content-type", "")
+            assert "text/event-stream" in ctype, f"bad content-type: {ctype}"
+
+            delta_count = 0
+            got_done = False
+            got_error = False
+            full_text = ""
+            for raw in r.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                payload = raw[5:].strip()
+                try:
+                    obj = _json.loads(payload)
+                except Exception:
+                    continue
+                if "delta" in obj:
+                    delta_count += 1
+                    full_text += obj["delta"]
+                elif obj.get("done"):
+                    got_done = True
+                    break
+                elif obj.get("error"):
+                    got_error = True
+
+            assert not got_error, "stream emitted error frame"
+            assert delta_count > 0, "no delta chunks received"
+            assert got_done, "stream did not end with done:true"
+            assert len(full_text) > 3, f"no accumulated text: {full_text!r}"
+
+        # Give server a moment to persist the assistant message
+        time.sleep(1.0)
+        h_after = stream_user.get(f"{API}/ai/chat/history", timeout=10).json()
+        assert len(h_after) == n_before + 2, \
+            f"history should grow by 2, got {len(h_after)-n_before}"
+        # last two entries: user then assistant
+        last_two = h_after[-2:]
+        assert last_two[0]["role"] == "user"
+        assert last_two[1]["role"] == "assistant"
+        assert len(last_two[1]["content"]) > 0
+        stream_user.first_user_msg = last_two[0]["content"]
+
+    def test_stream_conversation_memory(self, stream_user):
+        """Second stream request should recall context from first turn."""
+        # First turn: give the assistant a specific pet name to remember
+        with stream_user.post(
+            f"{API}/ai/chat/stream",
+            json={"message": "Il mio cane si chiama Fulmine. Ricordati questo nome."},
+            stream=True, timeout=120,
+        ) as r:
+            assert r.status_code == 200
+            for raw in r.iter_lines(decode_unicode=True):
+                if raw and raw.startswith("data:") and '"done"' in raw:
+                    break
+        time.sleep(0.5)
+
+        # Second turn: ask the model to recall the name
+        full = ""
+        with stream_user.post(
+            f"{API}/ai/chat/stream",
+            json={"message": "Come si chiama il mio cane?"},
+            stream=True, timeout=120,
+        ) as r:
+            assert r.status_code == 200
+            for raw in r.iter_lines(decode_unicode=True):
+                if not raw or not raw.startswith("data:"):
+                    continue
+                try:
+                    obj = _json.loads(raw[5:].strip())
+                except Exception:
+                    continue
+                if "delta" in obj:
+                    full += obj["delta"]
+                elif obj.get("done"):
+                    break
+        assert "fulmine" in full.lower(), \
+            f"Streaming chat did not recall the pet name 'Fulmine'. Got: {full[:400]}"
+
+
+# ---------- Scheduler + Manual Batch (NEW FEATURE) ----------
+class TestSchedulerBatch:
+    """Verify:
+       - POST /api/push/run-batch requires auth (401 anonymous)
+       - Non-admin user gets 403 with detail 'Solo admin'
+       - Admin gets {total: int}
+       - Regression: POST /api/push/check-reminders still works per user
+    """
+
+    def test_run_batch_requires_auth(self):
+        r = requests.post(f"{API}/push/run-batch", timeout=15)
+        assert r.status_code == 401
+
+    def test_run_batch_forbidden_for_non_admin(self, new_user_session):
+        r = new_user_session.post(f"{API}/push/run-batch", timeout=15)
+        assert r.status_code == 403, f"non-admin should be 403, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body.get("detail") == "Solo admin", f"unexpected detail: {body}"
+
+    def test_run_batch_ok_for_admin(self, admin_session):
+        r = admin_session.post(f"{API}/push/run-batch", timeout=30)
+        assert r.status_code == 200, f"admin batch failed: {r.status_code} {r.text}"
+        body = r.json()
+        assert "total" in body
+        assert isinstance(body["total"], int)
+        assert body["total"] >= 0
+
+    def test_check_reminders_still_works(self, new_user_session):
+        r = new_user_session.post(f"{API}/push/check-reminders", timeout=30)
+        assert r.status_code == 200
+        assert isinstance(r.json().get("sent"), int)

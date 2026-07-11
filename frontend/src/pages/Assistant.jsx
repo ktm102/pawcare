@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import api from "@/lib/api";
+import api, { API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,13 +33,44 @@ export default function Assistant() {
     const msg = text ?? input;
     if (!msg.trim() || busy) return;
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: msg, id: Date.now() }]);
+    const assistantId = Date.now() + 1;
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: msg, id: Date.now() },
+      { role: "assistant", content: "", id: assistantId },
+    ]);
     setBusy(true);
     try {
-      const { data } = await api.post("/ai/chat", { message: msg, pet_id: petId === "none" ? null : petId });
-      setMessages((m) => [...m, { role: "assistant", content: data.reply, id: Date.now() + 1 }]);
+      const res = await fetch(`${API}/ai/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ message: msg, pet_id: petId === "none" ? null : petId }),
+      });
+      if (!res.ok || !res.body) throw new Error("stream error");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+          let json;
+          try { json = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (json.delta) {
+            setMessages((m) => m.map((x) => (x.id === assistantId ? { ...x, content: x.content + json.delta } : x)));
+          } else if (json.error) {
+            setMessages((m) => m.map((x) => (x.id === assistantId ? { ...x, content: "Si è verificato un errore. Riprova." } : x)));
+          }
+        }
+      }
     } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: "Si è verificato un errore. Riprova.", id: Date.now() + 1 }]);
+      setMessages((m) => m.map((x) => (x.id === assistantId && !x.content ? { ...x, content: "Si è verificato un errore. Riprova." } : x)));
     } finally {
       setBusy(false);
     }
@@ -82,19 +113,18 @@ export default function Assistant() {
           {messages.map((m) => (
             <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`} data-testid={`message-${m.role}`}>
               <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
-                {m.content}
+                {m.role === "assistant" && m.content === "" ? (
+                  <span className="flex gap-1">
+                    <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" />
+                    <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.15s" }} />
+                    <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.3s" }} />
+                  </span>
+                ) : (
+                  m.content
+                )}
               </div>
             </div>
           ))}
-          {busy && (
-            <div className="flex justify-start">
-              <div className="bg-muted rounded-2xl px-4 py-3 flex gap-1">
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" />
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.15s" }} />
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.3s" }} />
-              </div>
-            </div>
-          )}
           <div ref={bottomRef} />
         </div>
 
