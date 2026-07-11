@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import api, { API } from "@/lib/api";
+import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +21,7 @@ export default function Assistant() {
   const [petId, setPetId] = useState("none");
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef(null);
+  const navigate = useNavigate();
 
   const loadHistory = useCallback(async () => {
     const [h, p] = await Promise.all([api.get("/ai/chat/history"), api.get("/pets")]);
@@ -47,6 +50,13 @@ export default function Assistant() {
         credentials: "include",
         body: JSON.stringify({ message: msg, pet_id: petId === "none" ? null : petId }),
       });
+      if (res.status === 402) {
+        const err = await res.json().catch(() => ({}));
+        setMessages((m) => m.map((x) => (x.id === assistantId ? { ...x, content: err.detail || "Hai raggiunto il limite giornaliero di domande AI. Passa a Premium per domande illimitate." } : x)));
+        toast.error("Limite AI raggiunto — passa a Premium");
+        navigate("/abbonamento");
+        return;
+      }
       if (!res.ok || !res.body) throw new Error("stream error");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

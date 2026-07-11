@@ -18,7 +18,7 @@ import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dog, Cat, ArrowLeft, Plus, Syringe, ShieldCheck, Stethoscope, Trash,
-  Sparkle, PencilSimple, CalendarBlank, ChartLineUp, Scales, FileText, UploadSimple, DownloadSimple,
+  Sparkle, PencilSimple, CalendarBlank, ChartLineUp, Scales, FileText, UploadSimple, DownloadSimple, Crown,
 } from "@phosphor-icons/react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
@@ -33,6 +33,7 @@ export default function PetDetail() {
   const [treatments, setTreatments] = useState([]);
   const [weights, setWeights] = useState([]);
   const [documents, setDocuments] = useState([]);
+  const [isPremium, setIsPremium] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [docCategory, setDocCategory] = useState("referto");
   const fileRef = useRef(null);
@@ -53,6 +54,8 @@ export default function PetDetail() {
       setPet(p.data); setVisits(v.data); setVaccines(vac.data); setTreatments(tr.data); setWeights(w.data);
       const d = await api.get(`/pets/${petId}/documents`);
       setDocuments(d.data);
+      const sub = await api.get("/subscription/status");
+      setIsPremium(sub.data.premium);
     } catch (e) {
       toast.error("Impossibile caricare l'animale");
       navigate("/dashboard");
@@ -81,7 +84,12 @@ export default function PetDetail() {
       const { data } = await api.post("/ai/advice", { pet_id: petId });
       setAdvice(data.advice);
     } catch (e) {
-      toast.error("Errore nel generare i consigli");
+      if (e.response?.status === 402) {
+        toast.error(e.response?.data?.detail || "Funzione Premium");
+        navigate("/abbonamento");
+      } else {
+        toast.error("Errore nel generare i consigli");
+      }
     } finally {
       setAdviceLoading(false);
     }
@@ -283,6 +291,17 @@ export default function PetDetail() {
         </TabsContent>
 
         <TabsContent value="documents" className="mt-6 space-y-4">
+          {!isPremium ? (
+            <Card className="p-8 border-accent/40 bg-accent/5 text-center" data-testid="documents-premium-gate">
+              <Crown size={40} weight="duotone" className="text-accent mx-auto mb-3" />
+              <h3 className="font-heading font-bold text-lg">Gli allegati sono una funzione Premium</h3>
+              <p className="text-muted-foreground text-sm mb-4 max-w-md mx-auto">Conserva referti, analisi e ricette del tuo animale in un unico posto. Sblocca gli allegati con PawCare Premium.</p>
+              <Button className="rounded-full gap-2" onClick={() => navigate("/abbonamento")} data-testid="documents-upgrade-button">
+                <Crown size={16} weight="fill" /> Passa a Premium
+              </Button>
+            </Card>
+          ) : (
+          <>
           <Card className="p-5 border-border">
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
               <div className="flex-1">
@@ -325,6 +344,8 @@ export default function PetDetail() {
                 </Card>
               ))}
             </div>
+          )}
+          </>
           )}
         </TabsContent>
       </Tabs>

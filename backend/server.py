@@ -20,6 +20,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
 from pywebpush import webpush, WebPushException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import json as _json
@@ -516,6 +517,8 @@ async def upload_document(pet_id: str, file: UploadFile = File(...),
                           category: str = Form("altro"),
                           user: dict = Depends(get_current_user)):
     await _verify_pet(pet_id, user["user_id"])
+    if not is_premium(user):
+        raise HTTPException(status_code=402, detail="Gli allegati documenti sono una funzione Premium. Passa a Premium per caricare i documenti sanitari.")
     ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
     content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
     data = await file.read()
@@ -657,6 +660,7 @@ async def _pet_context(pet_id: str, user_id: str) -> str:
 
 @api_router.post("/ai/advice")
 async def ai_advice(input: AdviceInput, user: dict = Depends(get_current_user)):
+    await check_ai_quota(user)
     ctx = await _pet_context(input.pet_id, user["user_id"])
     if not ctx:
         raise HTTPException(status_code=404, detail="Animale non trovato")
@@ -667,11 +671,13 @@ async def ai_advice(input: AdviceInput, user: dict = Depends(get_current_user)):
     ).with_model("anthropic", "claude-sonnet-4-6")
     prompt = f"{ctx}\n\nFornisci consigli personalizzati di cura e prevenzione per questo animale in base alla sua età e razza. Struttura la risposta in sezioni brevi: Alimentazione, Attività fisica, Prevenzione sanitaria, Cosa monitorare. Usa un tono amichevole e pratico."
     resp = await chat.send_message(UserMessage(text=prompt))
+    await incr_ai_usage(user)
     return {"advice": resp}
 
 
 @api_router.post("/ai/chat")
 async def ai_chat(input: ChatInput, user: dict = Depends(get_current_user)):
+    await check_ai_quota(user)
     ctx = ""
     if input.pet_id:
         ctx = await _pet_context(input.pet_id, user["user_id"])
@@ -696,6 +702,7 @@ async def ai_chat(input: ChatInput, user: dict = Depends(get_current_user)):
     await db.chat_messages.insert_one({
         "id": str(uuid.uuid4()), "user_id": user["user_id"], "role": "assistant",
         "content": resp, "created_at": datetime.now(timezone.utc).isoformat()})
+    await incr_ai_usage(user)
     return {"reply": resp}
 
 
@@ -707,6 +714,7 @@ async def chat_history(user: dict = Depends(get_current_user)):
 
 @api_router.post("/ai/chat/stream")
 async def ai_chat_stream(input: ChatInput, user: dict = Depends(get_current_user)):
+    await check_ai_quota(user)
     ctx = ""
     if input.pet_id:
         ctx = await _pet_context(input.pet_id, user["user_id"])
@@ -725,6 +733,7 @@ async def ai_chat_stream(input: ChatInput, user: dict = Depends(get_current_user
         "content": input.message, "created_at": datetime.now(timezone.utc).isoformat()})
     user_id = user["user_id"]
     message_text = input.message
+    await incr_ai_usage(user)
 
     async def event_generator():
         chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user_id}",
@@ -842,6 +851,155 @@ async def push_run_batch(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Solo admin")
     total = await send_all_reminders()
     return {"total": total}
+
+
+# ---------------- Subscription / Premium (freemium) ----------------
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
+FREE_AI_DAILY_LIMIT = 5
+TRIAL_DAYS = 7
+PREMIUM_PACKAGES = {
+    "monthly": {"amount": 7.99, "days": 30, "name": "Premium Mensile"},
+    "yearly": {"amount": 79.99, "days": 365, "name": "Premium Annuale"},
+}
+
+
+def is_premium(user: dict) -> bool:
+    pu = user.get("premium_until")
+    if not pu:
+        return False
+    try:
+        dt = datetime.fromisoformat(pu)
+    except Exception:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt > datetime.now(timezone.utc)
+
+
+async def _ai_used_today(user_id: str) -> int:
+    today = datetime.now(timezone.utc).date().isoformat()
+    u = await db.ai_usage.find_one({"user_id": user_id, "date": today})
+    return u["count"] if u else 0
+
+
+async def check_ai_quota(user: dict):
+    if is_premium(user):
+        return
+    if await _ai_used_today(user["user_id"]) >= FREE_AI_DAILY_LIMIT:
+        raise HTTPException(status_code=402,
+                            detail=f"Hai raggiunto il limite giornaliero di {FREE_AI_DAILY_LIMIT} domande AI. Passa a Premium per domande illimitate.")
+
+
+async def incr_ai_usage(user: dict):
+    if is_premium(user):
+        return
+    today = datetime.now(timezone.utc).date().isoformat()
+    await db.ai_usage.update_one({"user_id": user["user_id"], "date": today},
+                                 {"$inc": {"count": 1}}, upsert=True)
+
+
+async def _grant_premium(user_id: str, days: int) -> str:
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    base = datetime.now(timezone.utc)
+    if u and u.get("premium_until"):
+        cur = datetime.fromisoformat(u["premium_until"])
+        if cur.tzinfo is None:
+            cur = cur.replace(tzinfo=timezone.utc)
+        if cur > base:
+            base = cur
+    new_until = (base + timedelta(days=days)).isoformat()
+    await db.users.update_one({"user_id": user_id}, {"$set": {"premium_until": new_until}})
+    return new_until
+
+
+class CheckoutInput(BaseModel):
+    package_id: str
+    origin_url: str
+
+
+@api_router.get("/subscription/status")
+async def subscription_status(user: dict = Depends(get_current_user)):
+    return {
+        "premium": is_premium(user),
+        "premium_until": user.get("premium_until"),
+        "trial_used": user.get("trial_used", False),
+        "ai_used_today": await _ai_used_today(user["user_id"]),
+        "ai_limit": FREE_AI_DAILY_LIMIT,
+        "packages": PREMIUM_PACKAGES,
+        "trial_days": TRIAL_DAYS,
+    }
+
+
+@api_router.post("/subscription/trial")
+async def start_trial(user: dict = Depends(get_current_user)):
+    if user.get("trial_used"):
+        raise HTTPException(status_code=400, detail="Prova gratuita già utilizzata")
+    if is_premium(user):
+        raise HTTPException(status_code=400, detail="Sei già Premium")
+    until = await _grant_premium(user["user_id"], TRIAL_DAYS)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"trial_used": True}})
+    return {"premium_until": until}
+
+
+@api_router.post("/subscription/checkout")
+async def create_subscription_checkout(input: CheckoutInput, request: Request, user: dict = Depends(get_current_user)):
+    if input.package_id not in PREMIUM_PACKAGES:
+        raise HTTPException(status_code=400, detail="Pacchetto non valido")
+    pkg = PREMIUM_PACKAGES[input.package_id]
+    host_url = str(request.base_url)
+    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{host_url}api/webhook/stripe")
+    origin = input.origin_url.rstrip("/")
+    success_url = f"{origin}/abbonamento?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/abbonamento"
+    req = CheckoutSessionRequest(amount=float(pkg["amount"]), currency="eur",
+                                 success_url=success_url, cancel_url=cancel_url,
+                                 metadata={"user_id": user["user_id"], "package_id": input.package_id})
+    session = await stripe_checkout.create_checkout_session(req)
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id, "user_id": user["user_id"], "package_id": input.package_id,
+        "amount": pkg["amount"], "currency": "eur", "payment_status": "initiated",
+        "processed": False, "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api_router.get("/subscription/checkout/status/{session_id}")
+async def subscription_checkout_status(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    tx = await db.payment_transactions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transazione non trovata")
+    host_url = str(request.base_url)
+    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{host_url}api/webhook/stripe")
+    status = await stripe_checkout.get_checkout_status(session_id)
+    await db.payment_transactions.update_one({"session_id": session_id},
+                                             {"$set": {"payment_status": status.payment_status, "status": status.status}})
+    if status.payment_status == "paid" and not tx.get("processed"):
+        pkg = PREMIUM_PACKAGES.get(tx["package_id"])
+        if pkg:
+            await _grant_premium(user["user_id"], pkg["days"])
+            await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"processed": True}})
+    return {"payment_status": status.payment_status, "status": status.status}
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature")
+    host_url = str(request.base_url)
+    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=f"{host_url}api/webhook/stripe")
+    try:
+        resp = await stripe_checkout.handle_webhook(body, sig)
+    except Exception as e:
+        logger.warning(f"Stripe webhook error: {e}")
+        return {"ok": False}
+    if resp.payment_status == "paid" and resp.session_id:
+        tx = await db.payment_transactions.find_one({"session_id": resp.session_id})
+        if tx and not tx.get("processed"):
+            pkg = PREMIUM_PACKAGES.get(tx.get("package_id"))
+            if pkg:
+                await _grant_premium(tx["user_id"], pkg["days"])
+                await db.payment_transactions.update_one({"session_id": resp.session_id},
+                                                         {"$set": {"processed": True, "payment_status": "paid"}})
+    return {"ok": True}
 
 
 @api_router.get("/")

@@ -765,6 +765,9 @@ class TestDocuments:
                    json={"email": email, "password": "Pass1234!", "name": "Doc Tester"},
                    timeout=15)
         assert r.status_code == 200
+        # Documents are Premium-gated: activate free trial so this user can upload
+        tr = s.post(f"{API}/subscription/trial", timeout=15)
+        assert tr.status_code == 200, f"trial activation failed: {tr.text}"
         pr = s.post(f"{API}/pets", json={
             "name": "TEST_DocPet", "species": "dog", "breed": "Bulldog",
             "birth_date": "2019-03-15", "sex": "M", "weight": 20.0
@@ -1127,3 +1130,253 @@ class TestAuthRoleInResponse:
                          json={"email": email, "password": "Pass1234!"}, timeout=10)
         assert r.status_code == 200
         assert r.json()["user"].get("role") == "user"
+
+
+
+# ---------- Subscription / Freemium (NEW FEATURE) ----------
+from datetime import datetime, timezone
+from pymongo import MongoClient
+
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
+
+
+def _direct_db():
+    """Direct pymongo handle for seeding ai_usage (avoids burning LLM credits)."""
+    return MongoClient(MONGO_URL)[DB_NAME]
+
+
+class TestSubscription:
+    """Verify freemium subscription flow:
+       - GET /api/subscription/status shape for fresh user (premium=false, trial_used=false)
+       - POST /api/subscription/trial grants 7 days premium, blocks 2nd call, blocks if already premium
+       - POST /api/subscription/checkout returns stripe url + session_id, records payment_transactions
+       - Invalid package_id -> 400
+       - GET /api/subscription/checkout/status/{id} works on unpaid session
+       - AI quota gating (5/day) via db seed
+       - Documents gating: free 402, after trial 200
+       - Premium user is not AI-limited (skipped-safely with seed check)
+    """
+
+    @pytest.fixture(scope="class")
+    def sub_user(self):
+        s = requests.Session()
+        email = f"test_sub_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Sub Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        me = s.get(f"{API}/auth/me", timeout=10).json()
+        s.user_id = me["user_id"]
+        s.email = email
+        return s
+
+    @pytest.fixture(scope="class")
+    def sub_user_2(self):
+        """Second user for AI quota test (isolated from doc/trial user)."""
+        s = requests.Session()
+        email = f"test_sub2_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Sub2 Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        me = s.get(f"{API}/auth/me", timeout=10).json()
+        s.user_id = me["user_id"]
+        s.email = email
+        return s
+
+    # ---- status shape ----
+    def test_status_fresh_user(self, sub_user):
+        r = sub_user.get(f"{API}/subscription/status", timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["premium"] is False
+        assert data.get("premium_until") in (None, "") or data.get("premium_until") is None
+        assert data["trial_used"] is False
+        assert data["ai_used_today"] == 0
+        assert data["ai_limit"] == 5
+        assert data["trial_days"] == 7
+        pkgs = data["packages"]
+        assert "monthly" in pkgs and "yearly" in pkgs
+        assert pkgs["monthly"]["amount"] == 7.99
+        assert pkgs["monthly"]["days"] == 30
+        assert pkgs["yearly"]["amount"] == 79.99
+        assert pkgs["yearly"]["days"] == 365
+
+    def test_status_requires_auth(self):
+        r = requests.get(f"{API}/subscription/status", timeout=10)
+        assert r.status_code == 401
+
+    # ---- checkout ----
+    def test_checkout_invalid_package(self, sub_user):
+        r = sub_user.post(f"{API}/subscription/checkout",
+                          json={"package_id": "lifetime", "origin_url": BASE_URL},
+                          timeout=15)
+        assert r.status_code == 400
+        assert "Pacchetto" in r.json().get("detail", "")
+
+    def test_checkout_monthly_creates_session(self, sub_user):
+        r = sub_user.post(f"{API}/subscription/checkout",
+                          json={"package_id": "monthly", "origin_url": BASE_URL},
+                          timeout=30)
+        assert r.status_code == 200, f"checkout failed: {r.text[:400]}"
+        data = r.json()
+        assert "url" in data and "session_id" in data
+        assert "stripe.com" in data["url"]
+        assert data["session_id"].startswith("cs_") or len(data["session_id"]) > 10
+        # payment_transactions record exists
+        db = _direct_db()
+        tx = db.payment_transactions.find_one({"session_id": data["session_id"]})
+        assert tx is not None
+        assert tx["user_id"] == sub_user.user_id
+        assert tx["package_id"] == "monthly"
+        assert tx["amount"] == 7.99
+        assert tx["payment_status"] == "initiated"
+        assert tx["processed"] is False
+        sub_user.session_id = data["session_id"]
+
+    def test_checkout_yearly_creates_session(self, sub_user):
+        r = sub_user.post(f"{API}/subscription/checkout",
+                          json={"package_id": "yearly", "origin_url": BASE_URL},
+                          timeout=30)
+        assert r.status_code == 200
+        data = r.json()
+        assert "stripe.com" in data["url"]
+        db = _direct_db()
+        tx = db.payment_transactions.find_one({"session_id": data["session_id"]})
+        assert tx and tx["amount"] == 79.99 and tx["package_id"] == "yearly"
+
+    def test_checkout_requires_auth(self):
+        r = requests.post(f"{API}/subscription/checkout",
+                          json={"package_id": "monthly", "origin_url": BASE_URL}, timeout=10)
+        assert r.status_code == 401
+
+    def test_checkout_status_returns_payment_status(self, sub_user):
+        sid = sub_user.session_id
+        r = sub_user.get(f"{API}/subscription/checkout/status/{sid}", timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "payment_status" in data
+        # Unpaid test session: payment_status is 'unpaid' or similar, NOT 'paid'
+        assert data["payment_status"] != "paid"
+        # user should not be premium since session unpaid
+        st = sub_user.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is False
+
+    def test_checkout_status_unknown_session(self, sub_user):
+        r = sub_user.get(f"{API}/subscription/checkout/status/cs_nonexistent_xxx", timeout=15)
+        assert r.status_code == 404
+
+    # ---- AI quota gating via DB seed (avoid burning real LLM credits) ----
+    def test_ai_quota_seeded_402(self, sub_user_2):
+        """Seed ai_usage {count:5} for today so all 3 AI endpoints 402."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        db = _direct_db()
+        db.ai_usage.update_one(
+            {"user_id": sub_user_2.user_id, "date": today},
+            {"$set": {"user_id": sub_user_2.user_id, "date": today, "count": 5}},
+            upsert=True,
+        )
+        # status reflects usage
+        st = sub_user_2.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["ai_used_today"] == 5
+        assert st["premium"] is False
+
+        # /ai/chat -> 402
+        r1 = sub_user_2.post(f"{API}/ai/chat", json={"message": "ciao"}, timeout=15)
+        assert r1.status_code == 402, f"expected 402, got {r1.status_code}: {r1.text[:300]}"
+        detail = r1.json().get("detail", "")
+        assert "5" in detail or "limit" in detail.lower() or "Premium" in detail
+
+        # /ai/advice -> 402 (pet_id doesn't matter, quota checked first)
+        r2 = sub_user_2.post(f"{API}/ai/advice", json={"pet_id": "any"}, timeout=15)
+        assert r2.status_code == 402
+
+        # /ai/chat/stream -> 402
+        r3 = sub_user_2.post(f"{API}/ai/chat/stream", json={"message": "ciao"}, timeout=15)
+        assert r3.status_code == 402
+
+    # ---- Trial ----
+    def test_documents_gate_free_402(self, sub_user):
+        """Free user (before trial) must get 402 uploading documents."""
+        # Create a pet first
+        pr = sub_user.post(f"{API}/pets", json={
+            "name": "TEST_DocGate", "species": "dog", "breed": "Poodle",
+            "birth_date": "2022-01-01", "sex": "F", "weight": 8.0
+        }, timeout=15)
+        assert pr.status_code == 200
+        sub_user.pet_id = pr.json()["id"]
+
+        files = {"file": ("gate.txt", b"gate content", "text/plain")}
+        r = sub_user.post(f"{API}/pets/{sub_user.pet_id}/documents",
+                          files=files, data={"category": "referto"}, timeout=30)
+        assert r.status_code == 402, f"expected 402, got {r.status_code}: {r.text[:300]}"
+        assert "Premium" in r.json().get("detail", "")
+
+        # But LIST still works for free users (empty)
+        lr = sub_user.get(f"{API}/pets/{sub_user.pet_id}/documents", timeout=10)
+        assert lr.status_code == 200
+        assert lr.json() == []
+
+    def test_trial_grants_premium(self, sub_user):
+        r = sub_user.post(f"{API}/subscription/trial", timeout=15)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "premium_until" in data
+        # premium_until should be ~7 days from now
+        until = datetime.fromisoformat(data["premium_until"])
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = (until - now).total_seconds() / 86400.0
+        assert 6.5 < delta < 7.5, f"expected ~7 days premium, got {delta}"
+
+        # status now reflects premium=true, trial_used=true
+        st = sub_user.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+        assert st["trial_used"] is True
+
+    def test_trial_second_call_400(self, sub_user):
+        r = sub_user.post(f"{API}/subscription/trial", timeout=15)
+        assert r.status_code == 400
+        detail = r.json().get("detail", "")
+        assert "Prova" in detail or "gratuita" in detail.lower() or "già" in detail
+
+    def test_documents_upload_ok_after_trial(self, sub_user):
+        """Premium (via trial) can now upload documents."""
+        files = {"file": ("premium.txt", b"premium upload OK", "text/plain")}
+        r = sub_user.post(f"{API}/pets/{sub_user.pet_id}/documents",
+                          files=files, data={"category": "referto"}, timeout=60)
+        assert r.status_code == 200, f"upload should succeed after trial, got {r.status_code}: {r.text[:300]}"
+        body = r.json()
+        assert body["name"] == "premium.txt"
+        assert body["is_deleted"] is False
+
+    def test_trial_blocked_when_already_premium(self, sub_user):
+        """A user who already has trial_used=true always gets 400 - covered above.
+           This test also confirms the endpoint stays 400 (not 500) when premium is active."""
+        r = sub_user.post(f"{API}/subscription/trial", timeout=15)
+        assert r.status_code == 400
+
+    def test_premium_user_ai_not_limited(self, sub_user):
+        """Premium user: seed count=99 to prove no 402 (do NOT actually call LLM)."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        db = _direct_db()
+        db.ai_usage.update_one(
+            {"user_id": sub_user.user_id, "date": today},
+            {"$set": {"user_id": sub_user.user_id, "date": today, "count": 99}},
+            upsert=True,
+        )
+        # status: premium=true, ai_used_today reported but no gate
+        st = sub_user.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+        assert st["ai_used_today"] == 99
+        # Directly assert check_ai_quota won't 402 by invoking a lightweight endpoint
+        # that runs the quota check first. We do NOT complete an LLM call.
+        # Trick: /ai/advice with an invalid pet_id would still pass the quota check
+        # (premium user), and then 404 on _pet_context; NOT 402.
+        r = sub_user.post(f"{API}/ai/advice",
+                          json={"pet_id": "definitely-not-real"}, timeout=30)
+        assert r.status_code != 402, f"premium user got 402: {r.status_code} {r.text[:200]}"
+        # It should be 404 (pet not found), not 402
+        assert r.status_code == 404

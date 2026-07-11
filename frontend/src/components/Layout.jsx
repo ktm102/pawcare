@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
 import { pushSupported, getSubscriptionStatus, subscribeToPush, unsubscribeFromPush } from "@/lib/push";
 import InstallBanner from "@/components/InstallBanner";
-import { PawPrint, House, BookOpen, ChatCircleDots, SignOut, Bell, BellSlash, CalendarBlank, ChartBar } from "@phosphor-icons/react";
+import { PawPrint, House, BookOpen, ChatCircleDots, SignOut, Bell, BellSlash, CalendarBlank, ChartBar, Crown } from "@phosphor-icons/react";
 
 const baseNav = [
   { to: "/dashboard", label: "Dashboard", icon: House },
@@ -83,6 +83,16 @@ export default function Layout({ children }) {
             })}
           </nav>
           <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full text-accent"
+              onClick={() => navigate("/abbonamento")}
+              data-testid="premium-nav-button"
+              title="PawCare Premium"
+            >
+              <Crown size={20} weight="fill" />
+            </Button>
             {supported && (
               <Button
                 variant={notifOn ? "default" : "ghost"}
