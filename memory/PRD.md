@@ -31,10 +31,12 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - Web Push notifications: VAPID, subscribe/unsubscribe, reminders (due within 7 days, deduped)
 - Background scheduler (APScheduler) daily 08:00 UTC + admin /push/run-batch
 - Medical document attachments per pet (Emergent Object Storage: upload/list/download/soft-delete, 15MB cap, owner isolation)
-- Multi-pet calendar view (/calendario): month grid + legend + month list aggregating visits/vaccines/treatments
-- Tested: 71/71 backend, 100% frontend across 6 iterations
+- Multi-pet calendar view (/calendario)
+- Admin dashboard (/admin, admin-only): stats + elenco utenti registrati con provider, data registrazione, n. animali/chat/push
+- PWA install banner guidato (Android beforeinstallprompt + istruzioni iOS), dismissibile
+- Tested: 82/82 backend, 100% frontend across 8 iterations
 
 ## Backlog / Next
+- P0: Abbonamento/monetizzazione (Stripe) — in definizione con l'utente
 - P1: Email reminders alternative (Resend/SendGrid)
 - P2: Configurable reminder lead-time & send hour per user
-- P2: Migrate deprecated on_event to lifespan; async httpx for sync requests calls
