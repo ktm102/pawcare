@@ -3,7 +3,7 @@ import api from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Users, PawPrint, ChatCircleDots, BellRinging, Stethoscope, TrendUp } from "@phosphor-icons/react";
+import { Users, PawPrint, ChatCircleDots, Stethoscope, TrendUp } from "@phosphor-icons/react";
 
 const StatCard = ({ icon: Icon, label, value, hint }) => (
   <Card className="p-5 border-border">
@@ -46,7 +46,6 @@ export default function Admin() {
           <StatCard icon={Users} label="Utenti totali" value={stats.total_users} hint={`${stats.google_users} Google · ${stats.email_users} Email`} />
           <StatCard icon={TrendUp} label="Nuovi (7 giorni)" value={stats.new_users_7d} />
           <StatCard icon={PawPrint} label="Animali" value={stats.total_pets} />
-          <StatCard icon={BellRinging} label="Notifiche attive" value={stats.push_users} hint="utenti iscritti alle push" />
           <StatCard icon={Stethoscope} label="Visite" value={stats.total_visits} />
           <StatCard icon={PawPrint} label="Vaccini" value={stats.total_vaccines} />
           <StatCard icon={PawPrint} label="Antiparassitari" value={stats.total_treatments} />
@@ -68,7 +67,6 @@ export default function Admin() {
                 <TableHead>Registrato</TableHead>
                 <TableHead className="text-center">Animali</TableHead>
                 <TableHead className="text-center">Chat</TableHead>
-                <TableHead className="text-center">Push</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -80,7 +78,6 @@ export default function Admin() {
                   <TableCell className="text-muted-foreground">{u.created_at ? new Date(u.created_at).toLocaleDateString("it-IT") : "—"}</TableCell>
                   <TableCell className="text-center">{u.pet_count}</TableCell>
                   <TableCell className="text-center">{u.chat_count}</TableCell>
-                  <TableCell className="text-center">{u.has_push ? "✓" : "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
