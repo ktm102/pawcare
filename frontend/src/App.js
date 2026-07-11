@@ -36,6 +36,14 @@ function PublicOnly({ children }) {
   return children;
 }
 
+function AdminRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <LoadingScreen />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== "admin") return <Navigate to="/dashboard" replace />;
+  return <Layout>{children}</Layout>;
+}
+
 function AppRouter() {
   const location = useLocation();
   if (location.hash?.includes("session_id=")) {
@@ -49,7 +57,7 @@ function AppRouter() {
       <Route path="/calendario" element={<Protected><Calendar /></Protected>} />
       <Route path="/guide" element={<Protected><Guides /></Protected>} />
       <Route path="/assistente" element={<Protected><Assistant /></Protected>} />
-      <Route path="/admin" element={<Protected><Admin /></Protected>} />
+      <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

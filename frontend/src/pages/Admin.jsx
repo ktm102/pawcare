@@ -21,9 +21,13 @@ export default function Admin() {
   const [users, setUsers] = useState([]);
 
   const load = useCallback(async () => {
-    const [s, u] = await Promise.all([api.get("/admin/stats"), api.get("/admin/users")]);
-    setStats(s.data);
-    setUsers(u.data);
+    try {
+      const [s, u] = await Promise.all([api.get("/admin/stats"), api.get("/admin/users")]);
+      setStats(s.data);
+      setUsers(u.data);
+    } catch (e) {
+      // access denied or network error — handled by route guard
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 

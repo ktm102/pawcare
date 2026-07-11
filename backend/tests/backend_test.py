@@ -1090,3 +1090,40 @@ class TestAdmin:
         # role field present for admin row
         assert admin_row.get("role") == "admin"
 
+
+
+# ---------- Bug-fix re-test: login/register responses must include user.role ----------
+class TestAuthRoleInResponse:
+    """Iteration 8 re-test:
+       - POST /api/auth/login  must return user.role
+       - POST /api/auth/register must return user.role
+    """
+
+    def test_login_response_includes_role_admin(self):
+        r = requests.post(f"{API}/auth/login",
+                          json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, timeout=10)
+        assert r.status_code == 200
+        body = r.json()
+        assert "user" in body
+        assert body["user"].get("role") == "admin", f"admin login missing role=admin, got: {body}"
+
+    def test_register_response_includes_role_user(self):
+        email = f"test_role8_{uuid.uuid4().hex[:8]}@example.com"
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "Pass1234!", "name": "Role8"},
+                          timeout=15)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["user"].get("role") == "user", f"register missing role=user, got: {body}"
+
+    def test_login_response_includes_role_user_for_regular(self):
+        # register then login as regular user
+        email = f"test_role8b_{uuid.uuid4().hex[:8]}@example.com"
+        r0 = requests.post(f"{API}/auth/register",
+                           json={"email": email, "password": "Pass1234!", "name": "Reg8"},
+                           timeout=15)
+        assert r0.status_code == 200
+        r = requests.post(f"{API}/auth/login",
+                         json={"email": email, "password": "Pass1234!"}, timeout=10)
+        assert r.status_code == 200
+        assert r.json()["user"].get("role") == "user"

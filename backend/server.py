@@ -252,7 +252,7 @@ async def register(input: RegisterInput, response: Response):
     await db.users.insert_one(doc)
     token = create_access_token(user_id, email)
     set_auth_cookie(response, token)
-    return {"user": {"user_id": user_id, "email": email, "name": input.name, "picture": ""}, "token": token}
+    return {"user": {"user_id": user_id, "email": email, "name": input.name, "picture": "", "role": "user"}, "token": token}
 
 
 @api_router.post("/auth/login")
@@ -263,7 +263,7 @@ async def login(input: LoginInput, response: Response):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     token = create_access_token(user["user_id"], email)
     set_auth_cookie(response, token)
-    return {"user": {"user_id": user["user_id"], "email": email, "name": user["name"], "picture": user.get("picture", "")}, "token": token}
+    return {"user": {"user_id": user["user_id"], "email": email, "name": user["name"], "picture": user.get("picture", ""), "role": user.get("role", "user")}, "token": token}
 
 
 @api_router.post("/auth/google/session")
@@ -291,7 +291,7 @@ async def google_session(request: Request, response: Response):
         "created_at": datetime.now(timezone.utc).isoformat()})
     response.set_cookie(key="session_token", value=session_token, httponly=True,
                         secure=True, samesite="none", max_age=604800, path="/")
-    return {"user": {"user_id": user["user_id"], "email": email, "name": user["name"], "picture": user.get("picture", "")}}
+    return {"user": {"user_id": user["user_id"], "email": email, "name": user["name"], "picture": user.get("picture", ""), "role": user.get("role", "user")}}
 
 
 @api_router.get("/auth/me")

@@ -1,0 +1,29 @@
+{
+  "summary": "Iteration 8 re-tested the two fixes flagged in iteration_7. BUG FIX 1 (HIGH) - admin nav visibility after login: PASS. POST /api/auth/login now returns {user:{...,role:'admin'}, token} (verified via curl and backend test). After email+password login as admin@pawcare.it, the desktop header immediately renders [data-testid=nav-admin] with text 'Admin' WITHOUT a page reload; clicking it lands on /admin which renders both admin-stats and admin-users-table. BUG FIX 2 (MEDIUM) - non-admin /admin route guard: PASS. Fresh registration returns user.role='user' (verified). No nav-admin appears in the DOM for the non-admin. Direct navigation to /admin is intercepted by <AdminRoute> in App.js and redirects to /dashboard; no admin-stats renders, no React error overlay iframe present, no pageerror captured. Backend suite: 82/82 pass in ~73s (added 3 new tests in TestAuthRoleInResponse asserting login/register responses include role). Regression: /auth/me still returns role; /admin/stats and /admin/users still 401 anonymous, 403 for non-admin, 200 for admin; pets/dashboard/AI/streaming/documents/calendar/push all green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py login/register/google_session responses now consistently include 'role' — good, keeps frontend setUser(data.user) usable without an extra /auth/me roundtrip.",
+    "App.js AdminRoute correctly checks role and redirects non-admins to /dashboard before <Admin/> ever mounts — avoids the 403 render path entirely.",
+    "Admin.jsx load() wraps Promise.all in try/catch (silent) — acceptable because AdminRoute already blocks non-admins; if Admin ever becomes reachable by non-admins again, consider surfacing a toast on 403 for user feedback.",
+    "Layout.jsx mobile bottom-nav map still lacks data-testid=nav-* attributes (only desktop nav does). Minor testability nit, not blocking.",
+    "server.py still uses deprecated @app.on_event handlers and sync `requests` inside async endpoints — carryover from earlier iterations, non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestAuthRoleInResponse class, 3 new tests, total 82)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {"backend": "100% (82/82 in ~73s)", "frontend": "100% - both bug fixes verified end-to-end via Playwright (Chromium 1440x900)"},
+  "test_credentials": "admin@pawcare.it / admin123 (role=admin). Ephemeral non-admin: test_gate_<ts>@example.com / Pass1234!",
+  "seed_data_creation": "None new — TestAuthRoleInResponse creates its own throwaway test_role8_* users via /auth/register.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both iteration_7 bugs are RESOLVED. Backend: login/register responses now include user.role (TestAuthRoleInResponse in backend_test.py, 3 tests). Frontend: <AdminRoute> in App.js gates /admin by role and Layout.jsx renders nav-admin only when user.role==='admin' — verified via Playwright that (a) admin sees the nav immediately post-login without reload, and (b) non-admin gets redirected from /admin to /dashboard with no error overlay/pageerror. Google OAuth session endpoint also updated to return role — if you want extra coverage, exercise the Emergent Google flow. iOS install banner and admin dashboard rendering unchanged from iteration_7 and still work.",
+  "rca of the issue": "Root cause (iteration_7): /api/auth/login and /api/auth/register response DTOs omitted 'role', so Auth.jsx's setUser(data.user) stored user.role=undefined and Layout.jsx hid the Admin link until the next /auth/me refresh (page reload). Fix applied (iteration_8, verified): server.py lines 255 (register) and 266 (login) now include role in the returned user dict, and 294 does the same for the google-session response. Frontend App.js added <AdminRoute> that checks user.role==='admin' and Navigate-redirects otherwise, so any non-admin hitting /admin never mounts <Admin/> and therefore cannot trigger the 403 Promise.all rejection. Admin.jsx#load also wraps the Promise.all in try/catch as defense-in-depth. Reproduction steps for the fix verification: (1) curl POST /api/auth/login admin creds → response contains role=admin; (2) UI: log in as admin → nav-admin visible instantly, no reload; (3) register + login as normal user → no nav-admin; goto /admin → redirected to /dashboard; no error overlay, no pageerror."
+}
