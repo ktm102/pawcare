@@ -24,14 +24,16 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - Pets CRUD with photo (base64), age auto-calc
 - Visits/Vaccines/Treatments CRUD per pet
 - Dashboard with pet grid + upcoming due dates (sorted by days_left)
-- AI advice endpoint + AI chat with persistent history
+- AI advice endpoint + AI chat with persistent history + CONVERSATION MEMORY (initial_messages)
 - Guides library (8 seeded guides) with species/age filter
+- Weight tracking + trend chart (recharts) per pet
+- PWA: installable (manifest.json + service worker), app icons
+- Web Push notifications: VAPID keys, subscribe/unsubscribe, reminders for items due within 7 days (deduped), in-app toggle in header
 - Full design system (Organic & Earthy theme, Manrope/Outfit fonts)
-- Tested: 26/26 backend, 100% frontend flows
+- Tested: 47/47 backend, 100% frontend flows across 4 iterations
 
 ## Backlog / Next
-- P1: Real email/push notifications for due dates (SendGrid) — currently in-app only
+- P1: Email reminders as alternative to web push (Resend/SendGrid)
 - P1: Streaming AI chat responses (SSE) for token-by-token UX
-- P2: Weight tracking over time (chart), medical document attachments
-- P2: Multi-pet reminders calendar view
-- P2: Object storage for photos instead of base64
+- P1: Background scheduler (APScheduler) to send push reminders even when app is closed (currently triggered on dashboard load)
+- P2: Medical document attachments, multi-pet calendar view, object storage for photos
