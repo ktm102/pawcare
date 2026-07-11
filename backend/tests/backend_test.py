@@ -744,3 +744,270 @@ class TestSchedulerBatch:
         r = new_user_session.post(f"{API}/push/check-reminders", timeout=30)
         assert r.status_code == 200
         assert isinstance(r.json().get("sent"), int)
+
+
+# ---------- Medical Documents (NEW FEATURE - Object Storage) ----------
+class TestDocuments:
+    """Verify document endpoints:
+       - GET /api/pets/{id}/documents lists non-deleted docs (no storage_path leaked)
+       - POST /api/pets/{id}/documents uploads (multipart) to object storage + DB record
+       - GET /api/documents/{doc_id}/download returns bytes with correct content-type
+       - DELETE /api/pets/{id}/documents/{doc_id} soft-deletes (is_deleted=true)
+       - Files > 15MB rejected with 400
+       - Auth required, owner-only
+    """
+
+    @pytest.fixture(scope="class")
+    def doc_user(self):
+        s = requests.Session()
+        email = f"test_doc_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Doc Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        pr = s.post(f"{API}/pets", json={
+            "name": "TEST_DocPet", "species": "dog", "breed": "Bulldog",
+            "birth_date": "2019-03-15", "sex": "M", "weight": 20.0
+        }, timeout=15)
+        assert pr.status_code == 200
+        s.pet_id = pr.json()["id"]
+        s.email = email
+        return s
+
+    def test_list_documents_empty_initially(self, doc_user):
+        r = doc_user.get(f"{API}/pets/{doc_user.pet_id}/documents", timeout=15)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_upload_document_txt(self, doc_user):
+        pid = doc_user.pet_id
+        content = b"TEST document contents - PawCare regression test\n"
+        files = {"file": ("test_referto.txt", content, "text/plain")}
+        data = {"category": "referto"}
+        r = doc_user.post(f"{API}/pets/{pid}/documents", files=files, data=data, timeout=60)
+        assert r.status_code == 200, f"upload failed: {r.status_code} {r.text[:400]}"
+        body = r.json()
+        assert body["name"] == "test_referto.txt"
+        assert body["category"] == "referto"
+        assert body["pet_id"] == pid
+        assert body["is_deleted"] is False
+        assert body["content_type"] == "text/plain"
+        assert "id" in body
+        # storage_path must NOT leak to client
+        assert "storage_path" not in body
+        assert "_id" not in body
+        doc_user.doc_id = body["id"]
+        doc_user.doc_content = content
+
+    def test_list_documents_shows_uploaded_no_storage_path(self, doc_user):
+        r = doc_user.get(f"{API}/pets/{doc_user.pet_id}/documents", timeout=15)
+        assert r.status_code == 200
+        docs = r.json()
+        assert len(docs) >= 1
+        our = next((d for d in docs if d["id"] == doc_user.doc_id), None)
+        assert our is not None
+        assert our["name"] == "test_referto.txt"
+        assert our["category"] == "referto"
+        assert "storage_path" not in our
+        assert "_id" not in our
+
+    def test_upload_default_category(self, doc_user):
+        """category defaults to 'altro' if not provided."""
+        pid = doc_user.pet_id
+        files = {"file": ("misc.txt", b"misc bytes", "text/plain")}
+        r = doc_user.post(f"{API}/pets/{pid}/documents", files=files, timeout=60)
+        assert r.status_code == 200, r.text
+        assert r.json()["category"] == "altro"
+        doc_user.doc_id_misc = r.json()["id"]
+
+    def test_download_document_returns_bytes(self, doc_user):
+        r = doc_user.get(f"{API}/documents/{doc_user.doc_id}/download", timeout=60)
+        assert r.status_code == 200
+        # Content bytes match what we uploaded
+        assert r.content == doc_user.doc_content, \
+            f"downloaded bytes mismatch. len={len(r.content)}"
+        # Content-Type should be text/plain (as stored)
+        ctype = r.headers.get("content-type", "")
+        assert "text/plain" in ctype, f"bad content-type: {ctype}"
+
+    def test_upload_requires_auth(self, doc_user):
+        files = {"file": ("x.txt", b"y", "text/plain")}
+        r = requests.post(f"{API}/pets/{doc_user.pet_id}/documents",
+                          files=files, data={"category": "altro"}, timeout=15)
+        assert r.status_code == 401
+
+    def test_list_documents_requires_auth(self, doc_user):
+        r = requests.get(f"{API}/pets/{doc_user.pet_id}/documents", timeout=10)
+        assert r.status_code == 401
+
+    def test_download_requires_auth(self, doc_user):
+        r = requests.get(f"{API}/documents/{doc_user.doc_id}/download", timeout=15)
+        assert r.status_code == 401
+
+    def test_download_isolated_across_users(self, doc_user, admin_session):
+        """Admin (different user) must NOT be able to download another user's doc."""
+        r = admin_session.get(f"{API}/documents/{doc_user.doc_id}/download", timeout=15)
+        assert r.status_code == 404
+
+    def test_upload_other_user_pet_rejected(self, doc_user, admin_session):
+        """Admin cannot upload to another user's pet (pet not found for admin)."""
+        files = {"file": ("x.txt", b"y", "text/plain")}
+        r = admin_session.post(f"{API}/pets/{doc_user.pet_id}/documents",
+                               files=files, data={"category": "altro"}, timeout=15)
+        assert r.status_code == 404
+
+    def test_upload_rejects_over_15mb(self, doc_user):
+        """15MB+1 byte payload must be rejected with 400."""
+        big = b"A" * (15 * 1024 * 1024 + 1)
+        files = {"file": ("big.txt", big, "text/plain")}
+        r = doc_user.post(f"{API}/pets/{doc_user.pet_id}/documents",
+                          files=files, data={"category": "altro"}, timeout=120)
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text[:300]}"
+        assert "15MB" in r.json().get("detail", "") or "grande" in r.json().get("detail", "").lower()
+
+    def test_soft_delete_document(self, doc_user):
+        pid = doc_user.pet_id
+        r = doc_user.delete(f"{API}/pets/{pid}/documents/{doc_user.doc_id}", timeout=15)
+        assert r.status_code == 200
+        assert r.json().get("ok") is True
+
+        # No longer in list
+        lst = doc_user.get(f"{API}/pets/{pid}/documents", timeout=15).json()
+        assert not any(d["id"] == doc_user.doc_id for d in lst), \
+            "soft-deleted doc still visible in list"
+
+        # Download by id must 404 (soft-deleted → not found)
+        dr = doc_user.get(f"{API}/documents/{doc_user.doc_id}/download", timeout=15)
+        assert dr.status_code == 404
+
+    def test_delete_pet_cascades_soft_delete_documents(self, doc_user):
+        """Delete pet must soft-delete remaining documents; list must return [] via new pet."""
+        pid = doc_user.pet_id
+        # doc_id_misc still exists — verify visible before delete
+        lst_before = doc_user.get(f"{API}/pets/{pid}/documents", timeout=15).json()
+        assert any(d["id"] == doc_user.doc_id_misc for d in lst_before)
+
+        # Delete the pet
+        r = doc_user.delete(f"{API}/pets/{pid}", timeout=15)
+        assert r.status_code == 200
+
+        # Download of the cascaded doc should also 404 (record still exists but is_deleted=true)
+        dr = doc_user.get(f"{API}/documents/{doc_user.doc_id_misc}/download", timeout=15)
+        assert dr.status_code == 404
+
+
+# ---------- Calendar (NEW FEATURE - multi-pet events) ----------
+class TestCalendar:
+    """Verify GET /api/calendar/events returns all events across the user's pets:
+       - visits (date), vaccines (next_due), treatments (next_due)
+       - each event has {date, type, title, pet_id, pet_name}
+       - sorted by date ascending
+       - only current user's events (isolation)
+       - empty list when user has no pets
+    """
+
+    @pytest.fixture(scope="class")
+    def cal_user(self):
+        s = requests.Session()
+        email = f"test_cal_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Cal Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        s.email = email
+        return s
+
+    def test_calendar_empty_no_pets(self, cal_user):
+        r = cal_user.get(f"{API}/calendar/events", timeout=15)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_calendar_returns_all_event_types_sorted(self, cal_user):
+        # Create two pets
+        p1 = cal_user.post(f"{API}/pets", json={
+            "name": "TEST_CalPet1", "species": "dog", "breed": "Boxer",
+            "birth_date": "2020-01-01", "sex": "M", "weight": 22.0
+        }, timeout=15).json()
+        p2 = cal_user.post(f"{API}/pets", json={
+            "name": "TEST_CalPet2", "species": "cat", "breed": "Siamese",
+            "birth_date": "2021-01-01", "sex": "F", "weight": 4.5
+        }, timeout=15).json()
+        cal_user.p1 = p1["id"]
+        cal_user.p2 = p2["id"]
+
+        # visit on pet1
+        cal_user.post(f"{API}/pets/{p1['id']}/visits", json={
+            "date": "2025-06-10", "reason": "TEST_Controllo", "veterinarian": "Dr. X"
+        }, timeout=10)
+        # vaccine on pet1 with next_due
+        cal_user.post(f"{API}/pets/{p1['id']}/vaccines", json={
+            "name": "TEST_Antirabbica", "date_given": "2025-01-01", "next_due": "2025-08-01"
+        }, timeout=10)
+        # vaccine without next_due → should NOT appear
+        cal_user.post(f"{API}/pets/{p1['id']}/vaccines", json={
+            "name": "TEST_NoDueVax", "date_given": "2025-01-01", "next_due": None
+        }, timeout=10)
+        # treatment on pet2 with next_due
+        cal_user.post(f"{API}/pets/{p2['id']}/treatments", json={
+            "name": "TEST_Antipulci", "date_given": "2025-01-01",
+            "frequency_days": 30, "next_due": "2025-04-15"
+        }, timeout=10)
+        # treatment without next_due → should NOT appear
+        cal_user.post(f"{API}/pets/{p2['id']}/treatments", json={
+            "name": "TEST_NoDueTr", "date_given": "2025-01-01",
+            "frequency_days": 30, "next_due": None
+        }, timeout=10)
+
+        r = cal_user.get(f"{API}/calendar/events", timeout=15)
+        assert r.status_code == 200
+        events = r.json()
+
+        # find our TEST events
+        ours = [e for e in events if e["title"].startswith("TEST_")]
+        titles = {e["title"] for e in ours}
+        assert "TEST_Controllo" in titles
+        assert "TEST_Antirabbica" in titles
+        assert "TEST_Antipulci" in titles
+        # events with null next_due are excluded
+        assert "TEST_NoDueVax" not in titles
+        assert "TEST_NoDueTr" not in titles
+
+        # Each event has required fields
+        for e in ours:
+            assert set(["date", "type", "title", "pet_id", "pet_name"]).issubset(e.keys())
+            assert e["type"] in ("visit", "vaccine", "treatment")
+            assert e["pet_name"] in ("TEST_CalPet1", "TEST_CalPet2")
+
+        # Verify types match
+        by_title = {e["title"]: e for e in ours}
+        assert by_title["TEST_Controllo"]["type"] == "visit"
+        assert by_title["TEST_Controllo"]["date"] == "2025-06-10"
+        assert by_title["TEST_Controllo"]["pet_id"] == p1["id"]
+        assert by_title["TEST_Controllo"]["pet_name"] == "TEST_CalPet1"
+
+        assert by_title["TEST_Antirabbica"]["type"] == "vaccine"
+        assert by_title["TEST_Antirabbica"]["date"] == "2025-08-01"
+
+        assert by_title["TEST_Antipulci"]["type"] == "treatment"
+        assert by_title["TEST_Antipulci"]["date"] == "2025-04-15"
+        assert by_title["TEST_Antipulci"]["pet_name"] == "TEST_CalPet2"
+
+        # Sorted ascending by date (globally, not only ours)
+        dates = [e["date"] for e in events]
+        assert dates == sorted(dates), f"events not sorted ascending: {dates}"
+
+    def test_calendar_requires_auth(self):
+        r = requests.get(f"{API}/calendar/events", timeout=10)
+        assert r.status_code == 401
+
+    def test_calendar_isolated_across_users(self, cal_user, admin_session):
+        """Admin's calendar must NOT include cal_user's TEST_ events."""
+        r = admin_session.get(f"{API}/calendar/events", timeout=15)
+        assert r.status_code == 200
+        events = r.json()
+        # None of admin's events should be linked to cal_user's pets
+        assert not any(e["pet_id"] in (cal_user.p1, cal_user.p2) for e in events)
+        # And no TEST_ titles from cal_user's pets
+        assert not any(e["title"] in ("TEST_Controllo", "TEST_Antirabbica", "TEST_Antipulci")
+                       and e["pet_name"] in ("TEST_CalPet1", "TEST_CalPet2")
+                       for e in events)

@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,9 +15,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import PetDialog from "@/components/PetDialog";
 import { toast } from "sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dog, Cat, ArrowLeft, Plus, Syringe, ShieldCheck, Stethoscope, Trash,
-  Sparkle, PencilSimple, CalendarBlank, ChartLineUp, Scales,
+  Sparkle, PencilSimple, CalendarBlank, ChartLineUp, Scales, FileText, UploadSimple, DownloadSimple,
 } from "@phosphor-icons/react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
@@ -31,6 +32,10 @@ export default function PetDetail() {
   const [vaccines, setVaccines] = useState([]);
   const [treatments, setTreatments] = useState([]);
   const [weights, setWeights] = useState([]);
+  const [documents, setDocuments] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [docCategory, setDocCategory] = useState("referto");
+  const fileRef = useRef(null);
   const [editOpen, setEditOpen] = useState(false);
   const [recordDialog, setRecordDialog] = useState(null); // 'visit'|'vaccine'|'treatment'|'weight'
   const [advice, setAdvice] = useState("");
@@ -46,6 +51,8 @@ export default function PetDetail() {
         api.get(`/pets/${petId}/weights`),
       ]);
       setPet(p.data); setVisits(v.data); setVaccines(vac.data); setTreatments(tr.data); setWeights(w.data);
+      const d = await api.get(`/pets/${petId}/documents`);
+      setDocuments(d.data);
     } catch (e) {
       toast.error("Impossibile caricare l'animale");
       navigate("/dashboard");
@@ -78,6 +85,44 @@ export default function PetDetail() {
     } finally {
       setAdviceLoading(false);
     }
+  };
+
+  const uploadDoc = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("category", docCategory);
+      await api.post(`/pets/${petId}/documents`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success("Documento caricato");
+      loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Caricamento fallito");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const openDoc = async (doc) => {
+    try {
+      const res = await fetch(`${API}/documents/${doc.id}/download`, { credentials: "include" });
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      toast.error("Impossibile aprire il documento");
+    }
+  };
+
+  const deleteDoc = async (docId) => {
+    await api.delete(`/pets/${petId}/documents/${docId}`);
+    toast.success("Documento eliminato");
+    loadAll();
   };
 
   if (!pet) return <p className="text-muted-foreground">Caricamento...</p>;
@@ -152,6 +197,7 @@ export default function PetDetail() {
           <TabsTrigger value="vaccines" className="rounded-full gap-1" data-testid="tab-vaccines"><Syringe size={16} /> Vaccini</TabsTrigger>
           <TabsTrigger value="treatments" className="rounded-full gap-1" data-testid="tab-treatments"><ShieldCheck size={16} /> Antiparassitari</TabsTrigger>
           <TabsTrigger value="weight" className="rounded-full gap-1" data-testid="tab-weight"><Scales size={16} /> Peso</TabsTrigger>
+          <TabsTrigger value="documents" className="rounded-full gap-1" data-testid="tab-documents"><FileText size={16} /> Documenti</TabsTrigger>
         </TabsList>
 
         <TabsContent value="visits" className="mt-6 space-y-3">
@@ -233,6 +279,52 @@ export default function PetDetail() {
                 ))}
               </div>
             </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="documents" className="mt-6 space-y-4">
+          <Card className="p-5 border-border">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+              <div className="flex-1">
+                <label className="text-xs tracking-[0.15em] uppercase font-bold text-muted-foreground">Categoria</label>
+                <Select value={docCategory} onValueChange={setDocCategory}>
+                  <SelectTrigger className="mt-1" data-testid="document-category-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="referto">Referto</SelectItem>
+                    <SelectItem value="analisi">Analisi</SelectItem>
+                    <SelectItem value="ricetta">Ricetta / Prescrizione</SelectItem>
+                    <SelectItem value="libretto">Libretto sanitario</SelectItem>
+                    <SelectItem value="altro">Altro</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.txt" onChange={uploadDoc} className="hidden" data-testid="document-file-input" />
+              <Button className="rounded-full gap-2" disabled={uploading} onClick={() => fileRef.current?.click()} data-testid="upload-document-button">
+                <UploadSimple size={18} weight="bold" /> {uploading ? "Caricamento..." : "Carica documento"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">PDF o immagini, max 15MB.</p>
+          </Card>
+          {documents.length === 0 ? <Empty text="Nessun documento caricato" /> : (
+            <div className="space-y-3">
+              {documents.map((d) => (
+                <Card key={d.id} className="p-4 border-border flex items-center justify-between gap-4" data-testid="document-row">
+                  <button onClick={() => openDoc(d)} className="flex items-center gap-3 text-left flex-1 min-w-0" data-testid="open-document-button">
+                    <div className="h-10 w-10 rounded-lg bg-secondary flex items-center justify-center shrink-0">
+                      <FileText size={20} weight="duotone" className="text-secondary-foreground" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{d.name}</p>
+                      <p className="text-sm text-muted-foreground capitalize">{d.category} · {fmt(d.created_at)}</p>
+                    </div>
+                  </button>
+                  <div className="flex gap-1 shrink-0">
+                    <Button variant="ghost" size="icon" onClick={() => openDoc(d)} title="Apri" data-testid="download-document-button"><DownloadSimple size={18} /></Button>
+                    <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => deleteDoc(d.id)} data-testid="delete-document-button"><Trash size={16} /></Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
           )}
         </TabsContent>
       </Tabs>

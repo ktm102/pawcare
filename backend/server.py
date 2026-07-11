@@ -5,7 +5,7 @@ import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -161,6 +161,44 @@ class PushSubscriptionInput(BaseModel):
     subscription: dict
 
 
+# ---------------- Object Storage ----------------
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+APP_NAME = "pawcare"
+storage_key = None
+MIME_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "pdf": "application/pdf",
+    "heic": "image/heic", "txt": "text/plain",
+}
+
+
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+    resp.raise_for_status()
+    storage_key = resp.json()["storage_key"]
+    return storage_key
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
 def _send_web_push(subscription_info: dict, payload: dict) -> bool:
     try:
         webpush(
@@ -314,6 +352,7 @@ async def delete_pet(pet_id: str, user: dict = Depends(get_current_user)):
     await db.vaccines.delete_many({"pet_id": pet_id})
     await db.treatments.delete_many({"pet_id": pet_id})
     await db.weights.delete_many({"pet_id": pet_id})
+    await db.documents.update_many({"pet_id": pet_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
 
@@ -418,6 +457,88 @@ async def delete_weight(pet_id: str, item_id: str, user: dict = Depends(get_curr
     await _verify_pet(pet_id, user["user_id"])
     await db.weights.delete_one({"id": item_id, "pet_id": pet_id})
     return {"ok": True}
+
+
+# ---------------- Medical documents ----------------
+@api_router.get("/pets/{pet_id}/documents")
+async def list_documents(pet_id: str, user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    return await db.documents.find(
+        {"pet_id": pet_id, "is_deleted": False}, {"_id": 0, "storage_path": 0}
+    ).sort("created_at", -1).to_list(1000)
+
+
+@api_router.post("/pets/{pet_id}/documents")
+async def upload_document(pet_id: str, file: UploadFile = File(...),
+                          category: str = Form("altro"),
+                          user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    ext = file.filename.split(".")[-1].lower() if "." in file.filename else "bin"
+    content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File troppo grande (max 15MB)")
+    path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4()}.{ext}"
+    try:
+        result = put_object(path, data, content_type)
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Caricamento fallito")
+    doc = {
+        "id": str(uuid.uuid4()), "pet_id": pet_id, "user_id": user["user_id"],
+        "storage_path": result["path"], "name": file.filename, "category": category,
+        "content_type": content_type, "size": result.get("size", len(data)),
+        "is_deleted": False, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.documents.insert_one(dict(doc))
+    doc.pop("_id", None)
+    doc.pop("storage_path", None)
+    return doc
+
+
+@api_router.get("/documents/{doc_id}/download")
+async def download_document(doc_id: str, user: dict = Depends(get_current_user)):
+    record = await db.documents.find_one({"id": doc_id, "user_id": user["user_id"], "is_deleted": False})
+    if not record:
+        raise HTTPException(status_code=404, detail="Documento non trovato")
+    data, content_type = get_object(record["storage_path"])
+    return Response(content=data, media_type=record.get("content_type", content_type),
+                    headers={"Content-Disposition": f'inline; filename="{record["name"]}"'})
+
+
+@api_router.delete("/pets/{pet_id}/documents/{doc_id}")
+async def delete_document(pet_id: str, doc_id: str, user: dict = Depends(get_current_user)):
+    await _verify_pet(pet_id, user["user_id"])
+    await db.documents.update_one(
+        {"id": doc_id, "pet_id": pet_id, "user_id": user["user_id"]},
+        {"$set": {"is_deleted": True}})
+    return {"ok": True}
+
+
+# ---------------- Calendar (multi-pet) ----------------
+@api_router.get("/calendar/events")
+async def calendar_events(user: dict = Depends(get_current_user)):
+    pets = await db.pets.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+    pet_map = {p["id"]: p["name"] for p in pets}
+    pet_ids = list(pet_map.keys())
+    events = []
+    if not pet_ids:
+        return events
+    visits = await db.visits.find({"pet_id": {"$in": pet_ids}}, {"_id": 0}).to_list(2000)
+    vaccines = await db.vaccines.find({"pet_id": {"$in": pet_ids}}, {"_id": 0}).to_list(2000)
+    treatments = await db.treatments.find({"pet_id": {"$in": pet_ids}}, {"_id": 0}).to_list(2000)
+    for v in visits:
+        events.append({"date": v["date"], "type": "visit", "title": v["reason"],
+                       "pet_id": v["pet_id"], "pet_name": pet_map.get(v["pet_id"], "")})
+    for v in vaccines:
+        if v.get("next_due"):
+            events.append({"date": v["next_due"], "type": "vaccine", "title": v["name"],
+                           "pet_id": v["pet_id"], "pet_name": pet_map.get(v["pet_id"], "")})
+    for t in treatments:
+        if t.get("next_due"):
+            events.append({"date": t["next_due"], "type": "treatment", "title": t["name"],
+                           "pet_id": t["pet_id"], "pet_name": pet_map.get(t["pet_id"], "")})
+    events.sort(key=lambda e: e["date"])
+    return events
 
 
 # ---------------- Dashboard: upcoming due dates ----------------
@@ -716,6 +837,11 @@ async def startup():
                           id="daily_reminders", replace_existing=True)
         scheduler.start()
         logger.info("Reminder scheduler started (daily 08:00 UTC)")
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
 
 
 @app.on_event("shutdown")
