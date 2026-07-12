@@ -1380,3 +1380,226 @@ class TestSubscription:
         assert r.status_code != 402, f"premium user got 402: {r.status_code} {r.text[:200]}"
         # It should be 404 (pet not found), not 402
         assert r.status_code == 404
+
+
+# ---------- Admin Premium Management (NEW FEATURE: gift/revoke/delete users) ----------
+class TestAdminPremiumManagement:
+    """Verify:
+       - POST /api/admin/users/{id}/grant-premium (monthly/yearly/lifetime)
+       - POST /api/admin/users/{id}/revoke-premium
+       - DELETE /api/admin/users/{id} with cascade + 400 self / 400 admin / 200 normal
+       - Auth: 403 for non-admin, 401 anonymous
+       - /admin/stats.premium_users count, /admin/users returns premium field
+    """
+
+    def _make_target(self):
+        s = requests.Session()
+        email = f"test_gift_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "Pass1234!", "name": "Gift Target"},
+                   timeout=15)
+        assert r.status_code == 200, f"register failed: {r.text}"
+        me = s.get(f"{API}/auth/me", timeout=10).json()
+        s.user_id = me["user_id"]
+        s.email = email
+        return s
+
+    def test_grant_lifetime_sets_2099(self, admin_session):
+        t = self._make_target()
+        r = admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                               json={"plan": "lifetime"}, timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "premium_until" in body
+        assert body["premium_until"].startswith("2099"), f"expected 2099, got {body['premium_until']}"
+        # Target user sees premium=true
+        st = t.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+        assert st["premium_until"].startswith("2099")
+        # revoke to clean up
+        admin_session.post(f"{API}/admin/users/{t.user_id}/revoke-premium", timeout=10)
+
+    def test_grant_monthly_adds_30_days(self, admin_session):
+        t = self._make_target()
+        r = admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                               json={"plan": "monthly"}, timeout=15)
+        assert r.status_code == 200
+        until = datetime.fromisoformat(r.json()["premium_until"])
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        delta = (until - datetime.now(timezone.utc)).total_seconds() / 86400.0
+        assert 29.5 < delta < 30.5, f"expected ~30d, got {delta}"
+        st = t.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+
+    def test_grant_yearly_adds_365_days(self, admin_session):
+        t = self._make_target()
+        r = admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                               json={"plan": "yearly"}, timeout=15)
+        assert r.status_code == 200
+        until = datetime.fromisoformat(r.json()["premium_until"])
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        delta = (until - datetime.now(timezone.utc)).total_seconds() / 86400.0
+        assert 364.5 < delta < 365.5, f"expected ~365d, got {delta}"
+        st = t.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+
+    def test_revoke_premium_clears(self, admin_session):
+        t = self._make_target()
+        # First grant
+        admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                           json={"plan": "monthly"}, timeout=15)
+        st = t.get(f"{API}/subscription/status", timeout=10).json()
+        assert st["premium"] is True
+        # Revoke
+        r = admin_session.post(f"{API}/admin/users/{t.user_id}/revoke-premium", timeout=10)
+        assert r.status_code == 200
+        assert r.json().get("ok") is True
+        st2 = t.get(f"{API}/subscription/status", timeout=10).json()
+        assert st2["premium"] is False
+        assert st2.get("premium_until") is None
+
+    def test_grant_premium_requires_admin(self, new_user_session):
+        # normal user cannot grant
+        # Need any target id — use their own id
+        me = new_user_session.get(f"{API}/auth/me").json()
+        r = new_user_session.post(f"{API}/admin/users/{me['user_id']}/grant-premium",
+                                  json={"plan": "monthly"}, timeout=10)
+        assert r.status_code == 403
+
+    def test_revoke_premium_requires_admin(self, new_user_session):
+        me = new_user_session.get(f"{API}/auth/me").json()
+        r = new_user_session.post(f"{API}/admin/users/{me['user_id']}/revoke-premium", timeout=10)
+        assert r.status_code == 403
+
+    def test_grant_premium_requires_auth(self):
+        r = requests.post(f"{API}/admin/users/x/grant-premium", json={"plan": "monthly"}, timeout=10)
+        assert r.status_code == 401
+
+    def test_grant_premium_unknown_user(self, admin_session):
+        r = admin_session.post(f"{API}/admin/users/nonexistent_id/grant-premium",
+                               json={"plan": "monthly"}, timeout=10)
+        assert r.status_code == 404
+
+    def test_admin_users_includes_premium_field(self, admin_session):
+        # Grant a fresh user premium so we can assert the badge round-trip
+        t = self._make_target()
+        admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                           json={"plan": "lifetime"}, timeout=15)
+        users = admin_session.get(f"{API}/admin/users", timeout=15).json()
+        row = next((u for u in users if u["user_id"] == t.user_id), None)
+        assert row is not None, "target user missing from admin users list"
+        assert row.get("premium") is True
+        assert row.get("premium_until", "").startswith("2099")
+        # cleanup
+        admin_session.post(f"{API}/admin/users/{t.user_id}/revoke-premium", timeout=10)
+        users2 = admin_session.get(f"{API}/admin/users", timeout=15).json()
+        row2 = next((u for u in users2 if u["user_id"] == t.user_id), None)
+        assert row2.get("premium") is False
+
+    def test_admin_stats_has_premium_users(self, admin_session):
+        # Grant one to ensure count >= 1
+        t = self._make_target()
+        admin_session.post(f"{API}/admin/users/{t.user_id}/grant-premium",
+                           json={"plan": "monthly"}, timeout=15)
+        r = admin_session.get(f"{API}/admin/stats", timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert "premium_users" in data
+        assert isinstance(data["premium_users"], int)
+        assert data["premium_users"] >= 1
+        # cleanup
+        admin_session.post(f"{API}/admin/users/{t.user_id}/revoke-premium", timeout=10)
+
+    # ---- Delete user ----
+    def test_delete_self_returns_400(self, admin_session):
+        me = admin_session.get(f"{API}/auth/me", timeout=10).json()
+        r = admin_session.delete(f"{API}/admin/users/{me['user_id']}", timeout=10)
+        assert r.status_code == 400
+        assert "Non puoi eliminare il tuo account" in r.json().get("detail", "")
+
+    def test_delete_another_admin_returns_400(self, admin_session):
+        # create another admin directly via mongo (we only have one admin normally)
+        db = _direct_db()
+        other_id = f"user_{uuid.uuid4().hex[:12]}"
+        db.users.insert_one({
+            "user_id": other_id, "email": f"test_admin2_{uuid.uuid4().hex[:6]}@example.com",
+            "name": "Other Admin", "password_hash": "$2b$12$dummy",
+            "picture": "", "auth_provider": "email", "role": "admin",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        try:
+            r = admin_session.delete(f"{API}/admin/users/{other_id}", timeout=10)
+            assert r.status_code == 400
+            assert "amministratore" in r.json().get("detail", "").lower()
+        finally:
+            db.users.delete_one({"user_id": other_id})
+
+    def test_delete_unknown_user_returns_404(self, admin_session):
+        r = admin_session.delete(f"{API}/admin/users/does_not_exist", timeout=10)
+        assert r.status_code == 404
+
+    def test_delete_requires_admin(self, new_user_session):
+        # register another target
+        target = self._make_target()
+        r = new_user_session.delete(f"{API}/admin/users/{target.user_id}", timeout=10)
+        assert r.status_code == 403
+
+    def test_delete_requires_auth(self):
+        r = requests.delete(f"{API}/admin/users/x", timeout=10)
+        assert r.status_code == 401
+
+    def test_delete_normal_user_cascades_and_removes_from_list(self, admin_session):
+        # Create a fresh target and load it with data
+        t = self._make_target()
+        pr = t.post(f"{API}/pets", json={
+            "name": "TEST_DelPet", "species": "dog", "breed": "Husky",
+            "birth_date": "2021-06-01", "sex": "M", "weight": 20.0
+        }, timeout=15)
+        assert pr.status_code == 200
+        pet_id = pr.json()["id"]
+        # Add related records
+        t.post(f"{API}/pets/{pet_id}/visits",
+               json={"date": "2025-01-15", "reason": "TEST_visit"}, timeout=10)
+        t.post(f"{API}/pets/{pet_id}/vaccines",
+               json={"name": "TEST_vax", "date_given": "2025-01-01",
+                     "next_due": "2025-12-01"}, timeout=10)
+        t.post(f"{API}/pets/{pet_id}/treatments",
+               json={"name": "TEST_tr", "date_given": "2025-01-01",
+                     "frequency_days": 30, "next_due": "2025-02-01"}, timeout=10)
+        t.post(f"{API}/pets/{pet_id}/weights",
+               json={"date": "2025-01-01", "weight": 21.0}, timeout=10)
+
+        # confirm the target is in admin/users
+        before = admin_session.get(f"{API}/admin/users", timeout=15).json()
+        assert any(u["user_id"] == t.user_id for u in before)
+
+        # DELETE
+        r = admin_session.delete(f"{API}/admin/users/{t.user_id}", timeout=15)
+        assert r.status_code == 200, r.text
+        assert r.json().get("ok") is True
+
+        # No longer in admin/users
+        after = admin_session.get(f"{API}/admin/users", timeout=15).json()
+        assert not any(u["user_id"] == t.user_id for u in after), \
+            "deleted user still present in /admin/users"
+
+        # Cascade: direct DB check that pet + related collections are cleaned up
+        db = _direct_db()
+        assert db.users.find_one({"user_id": t.user_id}) is None
+        assert db.pets.find_one({"user_id": t.user_id}) is None
+        assert db.pets.find_one({"id": pet_id}) is None
+        assert db.visits.find_one({"pet_id": pet_id}) is None
+        assert db.vaccines.find_one({"pet_id": pet_id}) is None
+        assert db.treatments.find_one({"pet_id": pet_id}) is None
+        assert db.weights.find_one({"pet_id": pet_id}) is None
+
+        # The user's session (cookie) should now be dead
+        me = t.get(f"{API}/auth/me", timeout=10)
+        assert me.status_code == 401
+
+    def test_grant_premium_to_deleted_user_returns_404(self, admin_session):
+        r = admin_session.post(f"{API}/admin/users/deleted_ghost_id/grant-premium",
+                               json={"plan": "monthly"}, timeout=10)
+        assert r.status_code == 404

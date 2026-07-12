@@ -322,6 +322,7 @@ async def admin_stats(user: dict = Depends(get_current_user)):
         "google_users": google_users,
         "email_users": email_users,
         "push_users": push_users,
+        "premium_users": await db.users.count_documents({"premium_until": {"$gt": datetime.now(timezone.utc).isoformat()}}),
         "total_pets": await db.pets.count_documents({}),
         "total_visits": await db.visits.count_documents({}),
         "total_vaccines": await db.vaccines.count_documents({}),
@@ -340,7 +341,59 @@ async def admin_users(user: dict = Depends(get_current_user)):
         u["pet_count"] = await db.pets.count_documents({"user_id": uid})
         u["chat_count"] = await db.chat_messages.count_documents({"user_id": uid, "role": "user"})
         u["has_push"] = await db.push_subscriptions.count_documents({"user_id": uid}) > 0
+        u["premium"] = is_premium(u)
     return users
+
+
+class GrantPremiumInput(BaseModel):
+    plan: str  # monthly | yearly | lifetime
+
+
+async def _cascade_delete_user(target_id: str):
+    pet_ids = [p["id"] for p in await db.pets.find({"user_id": target_id}, {"id": 1, "_id": 0}).to_list(2000)]
+    if pet_ids:
+        for c in ["visits", "vaccines", "treatments", "weights", "documents"]:
+            await db[c].delete_many({"pet_id": {"$in": pet_ids}})
+    for c in ["pets", "documents", "chat_messages", "ai_usage", "payment_transactions",
+              "push_subscriptions", "push_sent", "user_sessions"]:
+        await db[c].delete_many({"user_id": target_id})
+    await db.users.delete_one({"user_id": target_id})
+
+
+@api_router.post("/admin/users/{target_id}/grant-premium")
+async def admin_grant_premium(target_id: str, input: GrantPremiumInput, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    target = await db.users.find_one({"user_id": target_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if input.plan == "lifetime":
+        until = datetime(2099, 1, 1, tzinfo=timezone.utc).isoformat()
+        await db.users.update_one({"user_id": target_id}, {"$set": {"premium_until": until}})
+    else:
+        days = 365 if input.plan == "yearly" else 30
+        until = await _grant_premium(target_id, days)
+    return {"premium_until": until}
+
+
+@api_router.post("/admin/users/{target_id}/revoke-premium")
+async def admin_revoke_premium(target_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    await db.users.update_one({"user_id": target_id}, {"$unset": {"premium_until": ""}})
+    return {"ok": True}
+
+
+@api_router.delete("/admin/users/{target_id}")
+async def admin_delete_user(target_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    if target_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Non puoi eliminare il tuo account")
+    target = await db.users.find_one({"user_id": target_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Non puoi eliminare un amministratore")
+    await _cascade_delete_user(target_id)
+    return {"ok": True}
 
 
 @api_router.post("/auth/logout")

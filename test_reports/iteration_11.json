@@ -1,0 +1,72 @@
+{
+  "summary": "Full E2E test of NEW admin capability: gift/revoke premium and cascade-delete users. 17 new backend tests + full UI E2E all PASS. Regressions (auth, admin, abbonamento) all green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "backend_test_details": {
+    "new_class": "TestAdminPremiumManagement (17 tests, all PASS)",
+    "covered": [
+      "grant-premium lifetime -> premium_until starts with 2099 and target /subscription/status.premium=true",
+      "grant-premium monthly -> ~30 days from now",
+      "grant-premium yearly -> ~365 days from now",
+      "revoke-premium unsets premium_until; target /subscription/status.premium=false",
+      "grant/revoke require admin (403 non-admin, 401 anonymous)",
+      "grant unknown user_id -> 404",
+      "/admin/users row includes premium (bool) + premium_until, respected round-trip",
+      "/admin/stats includes premium_users:int",
+      "DELETE /admin/users/{self} -> 400 'Non puoi eliminare il tuo account'",
+      "DELETE /admin/users/{other_admin} -> 400 'amministratore'",
+      "DELETE unknown user -> 404",
+      "DELETE requires admin (403), anonymous 401",
+      "DELETE normal user -> 200; user gone from /admin/users; pets/visits/vaccines/treatments/weights all cascaded in Mongo; target session dead (401 on /me)",
+      "post-delete grant-premium returns 404"
+    ],
+    "regression_run": "TestAdmin (8), TestAuth (8), TestAuthRoleInResponse (3) -> 19/19 PASS"
+  },
+  "frontend_test_details": {
+    "admin_ui": {
+      "utenti_premium_card_present": true,
+      "premium_column_header_present": true,
+      "initial_row_shows_Gratuito": true,
+      "gift_monthly_updates_badge_to_fino_al_date": true,
+      "gift_lifetime_updates_badge_to_illimitato": true,
+      "revoke_premium_returns_to_Gratuito": true,
+      "delete_user_confirm_dialog_removes_row": true,
+      "delete_user_toast_shown": "Account eliminato",
+      "admin_dropdown_hides_delete_user_for_admin_role": true
+    },
+    "data_testids_verified": [
+      "user-actions-{id}", "gift-monthly", "delete-user", "confirm-delete-user",
+      "admin-users-table", "admin-stats"
+    ],
+    "regression": {
+      "login_ui_works_admin@pawcare.it": true,
+      "post_login_redirects_to_/dashboard": true,
+      "/admin_loads": true,
+      "/admin/stats_returns_premium_users_int": 2
+    },
+    "test_flow_summary": "Registered throwaway test_ui_{ts}@example.com via /api/auth/register, cleared cookies, logged in via UI as admin@pawcare.it, went to /admin, verified row/badge state through 4 lifecycle transitions (Gratuito -> monthly -> lifetime -> Gratuito -> deleted). Real accounts admin@pawcare.it and teresa.compi98@gmail.com left untouched (visible in final screenshot)."
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL cleanup: DB currently holds ~10 leftover test_* accounts from prior iterations (test_role8_*, test_gift_*, test_008c9b12, test_b8e81bd5, etc.). Consider a cleanup script or admin bulk-delete since PawCare only has one real user besides admin (teresa.compi98@gmail.com).",
+    "OPTIONAL UX: The 'Utenti Premium' stat card icon is a Crown; consider a distinct color/accent to visually differentiate from other cards (currently uses same text-primary as others). Not blocking."
+  ],
+  "critical_code_review_comments": [
+    "admin_grant_premium 'lifetime' branch inlines the write (bypasses _grant_premium). Fine — but it forcibly overwrites premium_until (no extension). This is intentional for lifetime.",
+    "_cascade_delete_user is correct: deletes pets first (collects pet_ids), then cascades visits/vaccines/treatments/weights/documents by pet_id, then wipes user-scoped collections (chat, ai_usage, payments, push, sessions). Order and idempotency look good.",
+    "Admin.jsx correctly hides the 'Elimina account' MenuItem when u.role === 'admin' — dropdown for admin user has zero delete items. Defense-in-depth: backend also returns 400 if attempted.",
+    "premiumLabel uses u.premium_until.startsWith('2099') to detect lifetime. Works because backend always stores ISO 2099-01-01. If lifetime year ever changes this breaks — consider a boolean flag u.lifetime instead.",
+    "Backend /admin/users iterates users and does N+3 queries per user (pet_count, chat_count, has_push, is_premium is in-memory only). Fine for admin panel with hundreds of users; would need aggregation pipeline at scale.",
+    "server.py is now 1106 lines — approaching the 700-line split threshold. Consider splitting into routes/admin.py, routes/pets.py, routes/subscription.py."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (17/17 new + 19/19 regression)", "frontend": "100% (all UI assertions PASS)"},
+  "test_credentials": "admin@pawcare.it / admin123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "One throwaway user per test method (test_gift_*/test_ui_*). All test_gift_* users created for tests were left behind by pytest since no teardown fixture. The single UI test user was DELETED via the UI flow. Real accounts (admin@pawcare.it, teresa.compi98@gmail.com) were NEVER touched — confirmed by presence in final screenshot.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Admin premium mgmt (gift/revoke/delete) is fully functional end-to-end. Data-testids in place: user-actions-{uid}, gift-monthly, delete-user, confirm-delete-user, admin-stats, admin-users-table. TestAdminPremiumManagement class covers all edge cases (self-delete 400, other-admin 400, unknown 404, auth gates 401/403, cascade delete verified via direct pymongo). Leftover test_* accounts pile up in DB — main agent might want a periodic cleanup job or 'bulk delete test users' admin action."
+}
