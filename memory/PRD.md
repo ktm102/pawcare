@@ -19,8 +19,7 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - AI care advice by age/breed + AI chat assistant
 - Care guides filtered by species/age
 
-## Implemented (2026-07-11)
-- Auth (email/password + Google), seeded admin (admin@pawcare.it / admin123)
+## Implemented (2026-07-11)- Auth (email/password + Google), seeded admin (admin@pawcare.it / admin123)
 - Pets CRUD with photo (base64), age auto-calc
 - Visits/Vaccines/Treatments CRUD per pet
 - Dashboard with pet grid + upcoming due dates
@@ -36,9 +35,11 @@ Webapp semplice per proprietari di animali domestici per tracciare visite veteri
 - PWA install banner guidato (Android beforeinstallprompt + istruzioni iOS), dismissibile
 - Freemium + Stripe: piano Premium mensile (€7,99/30gg) e annuale (€79,99/365gg) via Checkout (one-time pass, non auto-rinnovabile — limite wrapper Emergent mode=payment), prova gratuita 7 giorni in-app, pagina /abbonamento con polling stato + webhook idempotente
 - Gating freemium: max 5 domande AI/giorno (chat+consigli) e allegati documenti solo Premium; Premium sblocca tutto
-- Tested: 97/97 backend, 100% frontend across 9 iterations
+- Admin user management: elimina account (cascade), regala/rimuovi Premium (1 mese/1 anno/illimitato), vedi utenti Premium, card "Utenti Premium"
+- Recupero password: forgot/reset con token (TTL 1h), TEST MODE (link mostrato a schermo — email non ancora integrata)
+- Tested: backend suite verde + frontend E2E across 12 iterations
 
 ## Backlog / Next
-- P1: Email reminders alternative (Resend/SendGrid)
-- P2: Vero abbonamento auto-rinnovabile + billing portal (richiede Stripe SDK diretto con chiave reale, non supportato dal wrapper Emergent)
+- P0: Integrare email reale per il recupero password (Resend/SendGrid) — ora è in TEST MODE (link a schermo)
+- P1: Email reminders per le scadenze
 - P2: Configurable reminder lead-time & send hour per user
