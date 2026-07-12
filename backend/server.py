@@ -114,6 +114,15 @@ class LoginInput(BaseModel):
     password: str
 
 
+class ForgotPasswordInput(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordInput(BaseModel):
+    token: str
+    new_password: str
+
+
 class PetInput(BaseModel):
     name: str
     species: str  # dog / cat
@@ -400,6 +409,46 @@ async def admin_delete_user(target_id: str, user: dict = Depends(get_current_use
 async def logout(response: Response):
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("session_token", path="/")
+    return {"ok": True}
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(input: ForgotPasswordInput):
+    email = input.email.lower()
+    user = await db.users.find_one({"email": email})
+    # Only email/password accounts can reset a password
+    if not user or not user.get("password_hash"):
+        return {"found": False, "reset_url": None,
+                "message": "Se esiste un account con password per questa email, è stato generato un link di reset."}
+    token = secrets.token_urlsafe(32)
+    await db.password_reset_tokens.insert_one({
+        "token": token, "user_id": user["user_id"], "email": email, "used": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    frontend_url = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    reset_url = f"{frontend_url}/reset-password?token={token}"
+    # TEST MODE: no email service configured, so the link is returned to be shown on screen
+    return {"found": True, "reset_url": reset_url, "token": token,
+            "message": "Link di reset generato."}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(input: ResetPasswordInput):
+    if len(input.new_password) < 6:
+        raise HTTPException(status_code=400, detail="La password deve avere almeno 6 caratteri")
+    record = await db.password_reset_tokens.find_one({"token": input.token})
+    if not record or record.get("used"):
+        raise HTTPException(status_code=400, detail="Link non valido o già utilizzato")
+    expires_at = record["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Link scaduto. Richiedine uno nuovo.")
+    await db.users.update_one({"user_id": record["user_id"]},
+                              {"$set": {"password_hash": hash_password(input.new_password)}})
+    await db.password_reset_tokens.update_one({"token": input.token}, {"$set": {"used": True}})
     return {"ok": True}
 
 
@@ -1076,6 +1125,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 async def startup():
     await db.users.create_index("email", unique=True)
     await db.user_sessions.create_index("session_token")
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@pawcare.it")
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     existing = await db.users.find_one({"email": admin_email})

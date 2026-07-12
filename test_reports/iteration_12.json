@@ -1,0 +1,62 @@
+{
+  "summary": "Full E2E of NEW Password Recovery feature (forgot-password + reset-password, TEST MODE). 8 new backend tests + full UI journey (register API -> forgot on UI -> reset via link -> login with new password -> /reset-password w/o token) all PASS. Auth/Admin/Subscription regression: 34/34 PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "backend_test_details": {
+    "new_class": "TestPasswordReset (8 tests, all PASS)",
+    "covered": [
+      "forgot for existing email/password user -> found:true, token, reset_url containing /reset-password?token=; DB row inserted with used=false + expires_at",
+      "forgot for unknown email -> found:false, reset_url:null, generic message (no enumeration)",
+      "forgot for Google-only account (no password_hash) -> found:false, reset_url:null (seeded doc via pymongo)",
+      "reset with new_password shorter than 6 chars -> 400 detail mentions '6'",
+      "reset with unknown token -> 400 'Link non valido'",
+      "reset with manually-expired token (expires_at 2h ago) -> 400 'scaduto'",
+      "reset with valid token -> 200 {ok:true}, token row now used=true, bcrypt hash begins with $2b$, old password now 401, login with NEW password returns 200 + user.email",
+      "reusing already-used token -> 400 'utilizzato'"
+    ],
+    "regression_run": "TestAuth (8) + TestAuthRoleInResponse (3) + TestAdmin (11) + TestSubscription (14) -> 34/34 PASS"
+  },
+  "frontend_test_details": {
+    "journey_covered": [
+      "/login loads with email/password/google/forgot-link (regression OK)",
+      "click forgot-password-link -> mode=forgot: password field hidden, submit button text = 'Invia link di reset'",
+      "submit known email -> reset-link-box appears with data-testid=reset-link (href contains /reset-password?token=...)",
+      "back-to-login button returns to normal login form",
+      "navigate to reset URL -> ResetPassword page shows new-password-input + confirm-password-input + reset-submit-button",
+      "mismatched passwords -> stays on form, reset-success NOT shown",
+      "matching new password -> reset-success visible; go-login-button -> /login",
+      "login with NEW password succeeds -> redirected to /dashboard",
+      "/reset-password with NO token shows 'Link non valido o mancante.' + 'Vai al login' (no form)"
+    ],
+    "data_testids_verified": [
+      "forgot-password-link", "reset-link-box", "reset-link", "back-to-login",
+      "new-password-input", "confirm-password-input", "reset-submit-button",
+      "reset-success", "go-login-button", "email-input", "password-input",
+      "google-login-button", "submit-auth-button"
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "TEST MODE limitation is known/approved: reset_url is returned in API response and shown on screen. When email delivery is wired in, remove reset_url from response body (keep only in email) and hide reset-link-box in Auth.jsx.",
+    "OPTIONAL: forgot-password endpoint currently has no rate limiting; consider throttling per email/IP before production."
+  ],
+  "critical_code_review_comments": [
+    "forgot_password correctly distinguishes email/password vs google accounts (checks user.get('password_hash')) — good; prevents password reset on OAuth-only accounts.",
+    "reset_password validates used flag AND expires_at; handles both aware and naive datetimes with a safe defensive conversion. Correct.",
+    "Backend uses secrets.token_urlsafe(32) -> ~43 char URL-safe token; sufficient entropy.",
+    "TTL index on password_reset_tokens.expires_at (line 1128 in server.py) auto-purges expired tokens — good hygiene.",
+    "ResetPassword.jsx validates length>=6 client-side AND checks confirm match before POST — matches backend rules.",
+    "FRONTEND_URL env var is read for reset_url construction; if unset it falls back to empty string ('/reset-password?token=...'). In current deployment FRONTEND_URL is set correctly. Verified reset_url starts with the correct https://... prefix.",
+    "server.py now 1156 lines — still slightly above the 700-line comfort threshold. Consider splitting soon."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (8/8 new + 34/34 regression)", "frontend": "100% (all UI assertions PASS)"},
+  "test_credentials": "admin@pawcare.it / admin123 (from /app/memory/test_credentials.md). Throwaway users test_reset_*@example.com / test_reset_ui_*@example.com generated per test.",
+  "seed_data_creation": "Per-test throwaway users test_reset_*/test_exp_*/test_reset_ui_* created via /api/auth/register. One temporary google-only user seeded directly into users collection and cleaned up in the same test. Real accounts (admin@pawcare.it, teresa.compi98@gmail.com) never touched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Password reset flow (forgot + reset) is fully working in TEST MODE. Endpoints: POST /api/auth/forgot-password (returns reset_url in response body — intentional until email is wired), POST /api/auth/reset-password. Routes: /login (Auth.jsx), /reset-password (ResetPassword.jsx, public). Data-testids: forgot-password-link, reset-link-box, reset-link, back-to-login, new-password-input, confirm-password-input, reset-submit-button, reset-success, go-login-button. Backend suite total is now 92+ tests; run: cd /app/backend && python -m pytest tests/backend_test.py -n 0 -v."
+}

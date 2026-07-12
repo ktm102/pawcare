@@ -24,6 +24,7 @@ export default function Auth() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resetInfo, setResetInfo] = useState(null);
   const { setUser } = useAuth();
   const navigate = useNavigate();
 
@@ -31,6 +32,11 @@ export default function Auth() {
     e.preventDefault();
     setBusy(true);
     try {
+      if (mode === "forgot") {
+        const { data } = await api.post("/auth/forgot-password", { email });
+        setResetInfo(data);
+        return;
+      }
       const endpoint = mode === "login" ? "/auth/login" : "/auth/register";
       const payload = mode === "login" ? { email, password } : { email, password, name };
       const { data } = await api.post(endpoint, payload);
@@ -78,12 +84,14 @@ export default function Auth() {
             <span className="font-heading font-extrabold text-2xl">PawCare</span>
           </div>
           <h2 className="font-heading text-2xl font-bold mb-1">
-            {mode === "login" ? "Bentornato" : "Crea il tuo account"}
+            {mode === "login" ? "Bentornato" : mode === "register" ? "Crea il tuo account" : "Recupera la password"}
           </h2>
           <p className="text-muted-foreground text-sm mb-6">
-            {mode === "login" ? "Accedi per gestire i tuoi animali" : "Inizia a prenderti cura dei tuoi amici a quattro zampe"}
+            {mode === "login" ? "Accedi per gestire i tuoi animali" : mode === "register" ? "Inizia a prenderti cura dei tuoi amici a quattro zampe" : "Inserisci la tua email per ricevere il link di reset"}
           </p>
 
+          {mode !== "forgot" && (
+            <>
           <Button
             type="button"
             variant="outline"
@@ -100,7 +108,25 @@ export default function Auth() {
             <span className="text-xs text-muted-foreground uppercase tracking-wider">oppure</span>
             <div className="h-px bg-border flex-1" />
           </div>
+            </>
+          )}
 
+          {mode === "forgot" && resetInfo ? (
+            <div className="space-y-4" data-testid="reset-link-box">
+              <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
+                {resetInfo.reset_url ? (
+                  <>
+                    <p className="font-medium text-foreground mb-2">Link di reset generato (modalità test):</p>
+                    <a href={resetInfo.reset_url} className="text-primary break-all underline" data-testid="reset-link">{resetInfo.reset_url}</a>
+                    <p className="text-xs text-muted-foreground mt-2">In produzione questo link verrà inviato via email. Valido 1 ora.</p>
+                  </>
+                ) : (
+                  <p className="text-muted-foreground">{resetInfo.message}</p>
+                )}
+              </div>
+              <Button type="button" variant="outline" className="w-full rounded-full" onClick={() => { setMode("login"); setResetInfo(null); }} data-testid="back-to-login">Torna al login</Button>
+            </div>
+          ) : (
           <form onSubmit={submit} className="space-y-4">
             {mode === "register" && (
               <div>
@@ -112,25 +138,39 @@ export default function Auth() {
               <Label htmlFor="email">Email</Label>
               <Input id="email" type="email" data-testid="email-input" value={email} onChange={(e) => setEmail(e.target.value)} required className="mt-1" placeholder="mario@esempio.it" />
             </div>
-            <div>
-              <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" data-testid="password-input" value={password} onChange={(e) => setPassword(e.target.value)} required className="mt-1" placeholder="••••••••" />
-            </div>
+            {mode !== "forgot" && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Password</Label>
+                  {mode === "login" && (
+                    <button type="button" className="text-xs text-primary hover:underline" onClick={() => { setMode("forgot"); setResetInfo(null); }} data-testid="forgot-password-link">Password dimenticata?</button>
+                  )}
+                </div>
+                <Input id="password" type="password" data-testid="password-input" value={password} onChange={(e) => setPassword(e.target.value)} required className="mt-1" placeholder="••••••••" />
+              </div>
+            )}
             <Button type="submit" disabled={busy} className="w-full rounded-full" data-testid="submit-auth-button">
-              {busy ? "Attendere..." : mode === "login" ? "Accedi" : "Registrati"}
+              {busy ? "Attendere..." : mode === "login" ? "Accedi" : mode === "register" ? "Registrati" : "Invia link di reset"}
             </Button>
           </form>
+          )}
 
           <p className="text-center text-sm text-muted-foreground mt-6">
-            {mode === "login" ? "Non hai un account?" : "Hai già un account?"}{" "}
-            <button
-              type="button"
-              className="text-primary font-semibold hover:underline"
-              onClick={() => setMode(mode === "login" ? "register" : "login")}
-              data-testid="toggle-auth-mode"
-            >
-              {mode === "login" ? "Registrati" : "Accedi"}
-            </button>
+            {mode === "forgot" ? (
+              <button type="button" className="text-primary font-semibold hover:underline" onClick={() => { setMode("login"); setResetInfo(null); }} data-testid="toggle-auth-mode">Torna al login</button>
+            ) : (
+              <>
+                {mode === "login" ? "Non hai un account?" : "Hai già un account?"}{" "}
+                <button
+                  type="button"
+                  className="text-primary font-semibold hover:underline"
+                  onClick={() => setMode(mode === "login" ? "register" : "login")}
+                  data-testid="toggle-auth-mode"
+                >
+                  {mode === "login" ? "Registrati" : "Accedi"}
+                </button>
+              </>
+            )}
           </p>
         </Card>
       </div>

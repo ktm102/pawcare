@@ -1603,3 +1603,165 @@ class TestAdminPremiumManagement:
         r = admin_session.post(f"{API}/admin/users/deleted_ghost_id/grant-premium",
                                json={"plan": "monthly"}, timeout=10)
         assert r.status_code == 404
+
+
+# ---------- Password Reset (NEW FEATURE - forgot/reset password, TEST MODE) ----------
+class TestPasswordReset:
+    """Verify forgot-password + reset-password endpoints:
+       - forgot for existing email/password account -> {found:true, reset_url, token, message}
+         and a token row is inserted in password_reset_tokens with used=false
+       - forgot for unknown email -> {found:false, reset_url:None} (no enumeration)
+       - forgot for Google-only account (no password_hash) -> {found:false, reset_url:None}
+       - reset with valid token updates bcrypt hash; login with new password succeeds
+       - reset with SAME token again -> 400 'Link non valido o già utilizzato'
+       - reset with short password (<6) -> 400
+       - reset with unknown/malformed token -> 400
+       - reset with expired token -> 400 'scaduto'
+    """
+
+    @pytest.fixture(scope="class")
+    def reset_user(self):
+        """Fresh email/password user to exercise the reset flow."""
+        s = requests.Session()
+        email = f"test_reset_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "OldPass123", "name": "Reset Tester"},
+                   timeout=15)
+        assert r.status_code == 200, f"register failed: {r.text}"
+        s.email = email
+        s.original_password = "OldPass123"
+        return s
+
+    def test_forgot_for_existing_email_returns_link(self, reset_user):
+        r = requests.post(f"{API}/auth/forgot-password",
+                         json={"email": reset_user.email}, timeout=15)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["found"] is True
+        assert isinstance(data.get("token"), str) and len(data["token"]) > 20
+        assert isinstance(data.get("reset_url"), str)
+        assert "/reset-password?token=" in data["reset_url"]
+        assert data["token"] in data["reset_url"]
+        assert isinstance(data.get("message"), str) and len(data["message"]) > 0
+        # persistence in mongo
+        db = _direct_db()
+        rec = db.password_reset_tokens.find_one({"token": data["token"]})
+        assert rec is not None
+        assert rec.get("used") is False
+        assert rec.get("email") == reset_user.email
+        assert "expires_at" in rec
+        reset_user.token = data["token"]
+
+    def test_forgot_for_unknown_email_no_enumeration(self):
+        r = requests.post(f"{API}/auth/forgot-password",
+                         json={"email": f"nobody_{uuid.uuid4().hex[:8]}@example.com"}, timeout=10)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["found"] is False
+        assert data.get("reset_url") is None
+        # Generic message present (no user enumeration)
+        assert isinstance(data.get("message"), str) and len(data["message"]) > 0
+
+    def test_forgot_for_google_only_account_no_token(self):
+        """Seed a google-only user (no password_hash) and confirm forgot returns found:false."""
+        email = f"test_google_only_{uuid.uuid4().hex[:8]}@example.com"
+        db = _direct_db()
+        db.users.insert_one({
+            "user_id": f"g_{uuid.uuid4().hex}",
+            "email": email,
+            "name": "Google Only",
+            "auth_provider": "google",
+            # Intentionally NO password_hash
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        try:
+            r = requests.post(f"{API}/auth/forgot-password",
+                             json={"email": email}, timeout=10)
+            assert r.status_code == 200
+            data = r.json()
+            assert data["found"] is False
+            assert data.get("reset_url") is None
+        finally:
+            db.users.delete_one({"email": email})
+
+    def test_reset_short_password_rejected(self, reset_user):
+        r = requests.post(f"{API}/auth/reset-password",
+                         json={"token": reset_user.token, "new_password": "abc"}, timeout=10)
+        assert r.status_code == 400
+        detail = r.json().get("detail", "")
+        assert "6" in detail or "password" in detail.lower()
+
+    def test_reset_unknown_token_rejected(self):
+        r = requests.post(f"{API}/auth/reset-password",
+                         json={"token": "no-such-token-abc123", "new_password": "NewPass1234"}, timeout=10)
+        assert r.status_code == 400
+        assert "non valido" in r.json().get("detail", "").lower() or "utilizzato" in r.json().get("detail", "").lower()
+
+    def test_reset_expired_token_rejected(self):
+        """Insert a manually-expired token directly and confirm 400 'scaduto'."""
+        db = _direct_db()
+        # Create a throwaway user for this test
+        s = requests.Session()
+        email = f"test_exp_{uuid.uuid4().hex[:8]}@example.com"
+        r = s.post(f"{API}/auth/register",
+                   json={"email": email, "password": "OldPass123", "name": "Exp Tester"},
+                   timeout=15)
+        assert r.status_code == 200
+        me = s.get(f"{API}/auth/me", timeout=10).json()
+        expired_token = f"expired_{uuid.uuid4().hex}"
+        db.password_reset_tokens.insert_one({
+            "token": expired_token,
+            "user_id": me["user_id"],
+            "email": email,
+            "used": False,
+            "expires_at": datetime.now(timezone.utc) - timedelta(hours=2),
+            "created_at": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+        })
+        rr = requests.post(f"{API}/auth/reset-password",
+                          json={"token": expired_token, "new_password": "NewPass1234"}, timeout=10)
+        assert rr.status_code == 400
+        detail = rr.json().get("detail", "").lower()
+        assert "scad" in detail or "non valido" in detail
+        # cleanup
+        db.password_reset_tokens.delete_one({"token": expired_token})
+
+    def test_reset_success_and_login_with_new_password(self, reset_user):
+        new_password = "BrandNew123!"
+        r = requests.post(f"{API}/auth/reset-password",
+                         json={"token": reset_user.token, "new_password": new_password}, timeout=15)
+        assert r.status_code == 200, r.text
+        assert r.json().get("ok") is True
+
+        # Token now marked used=true
+        db = _direct_db()
+        rec = db.password_reset_tokens.find_one({"token": reset_user.token})
+        assert rec is not None and rec.get("used") is True
+
+        # bcrypt hash updated
+        u = db.users.find_one({"email": reset_user.email})
+        assert u is not None
+        ph = u.get("password_hash", "")
+        assert ph.startswith("$2b$") or ph.startswith("$2a$") or ph.startswith("$2y$"), \
+            f"bad bcrypt hash format: {ph[:8]}"
+
+        # Old password no longer works
+        r_old = requests.post(f"{API}/auth/login",
+                             json={"email": reset_user.email, "password": reset_user.original_password},
+                             timeout=10)
+        assert r_old.status_code == 401
+
+        # New password works
+        r_new = requests.post(f"{API}/auth/login",
+                             json={"email": reset_user.email, "password": new_password}, timeout=10)
+        assert r_new.status_code == 200, r_new.text
+        body = r_new.json()
+        assert body.get("user", {}).get("email") == reset_user.email
+        reset_user.new_password = new_password
+
+    def test_reset_token_reuse_rejected(self, reset_user):
+        """Reusing the same (now used) token must return 400."""
+        r = requests.post(f"{API}/auth/reset-password",
+                         json={"token": reset_user.token, "new_password": "AnotherPass123"}, timeout=10)
+        assert r.status_code == 400
+        detail = r.json().get("detail", "").lower()
+        assert "utilizzato" in detail or "non valido" in detail
